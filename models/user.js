@@ -7,18 +7,27 @@ module.exports = (sequelize, DataTypes) => {
       defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
     },
+    externalId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      unique: true,
+      comment: 'UUID of the user from the main React Native application'
+    },
     name: {
       type: DataTypes.STRING,
       allowNull: true
     },
     phone: {
       type: DataTypes.STRING,
-      allowNull: false,
-      unique: true,
+      allowNull: true
+    },
+    email: {
+      type: DataTypes.STRING,
+      allowNull: true
     },
     role: {
       type: DataTypes.ENUM("client", "freelancer", "admin"),
-      defaultValue: "freelancer",
+      defaultValue: "client",
       allowNull: false
     },
     socketId: {
@@ -48,6 +57,10 @@ module.exports = (sequelize, DataTypes) => {
       {
         unique: true,
         fields: ['phone']
+      },
+      {
+        unique: true,
+        fields: ['externalId']
       }
     ]
   });
@@ -59,34 +72,38 @@ module.exports = (sequelize, DataTypes) => {
     User.hasMany(models.DeviceToken, { foreignKey: 'userId', as: 'deviceTokens' });
   };
 
-  // Instance methods
-  User.prototype.getConversations = async function() {
-    const { models } = sequelize;
-    
-    const participations = await models.ConversationParticipant.findAll({
-      where: { userId: this.id },
-      include: [{
-        model: models.Conversation,
-        as: 'conversation',
-        include: [{
-          model: models.Message,
-          as: 'messages',
-          limit: 1,
-          order: [['createdAt', 'DESC']]
-        }]
-      }],
-      order: [[sequelize.literal('"conversation.lastMessageAt"'), 'DESC']]
-    });
-    
-    return participations.map(p => p.conversation);
-  };
+  // Add method to find or create user from token data
+  User.findOrCreateFromToken = async function(tokenData) {
+    try {
+      // Check if the externalId is a valid UUID
+      const isValidUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      const externalId = tokenData.id || tokenData.userId || tokenData.sub;
+      
+      if (!externalId || !isValidUUID.test(externalId)) {
+        throw new Error('Invalid external user ID. Must be a valid UUID');
+      }
+      
+      // First try to find by externalId
+      let user = await this.findOne({ where: { externalId } });
 
-  User.prototype.getActiveDeviceTokens = async function() {
-    const { models } = sequelize;
-    
-    return models.DeviceToken.findAll({
-      where: { userId: this.id }
-    });
+      if (!user) {
+        // If no user found, create a new one
+        user = await this.create({
+          id: DataTypes.UUIDV4(),
+          externalId,
+          name: tokenData.name || 'User',
+          phone: tokenData.phone || null,
+          email: tokenData.email || null,
+          role: 'client',
+          isOnline: true
+        });
+      }
+
+      return user;
+    } catch (error) {
+      console.error("Error in findOrCreateFromToken:", error);
+      throw error;
+    }
   };
 
   return User;

@@ -1,11 +1,14 @@
-// middleware/authenticate.js
+// middleware/auth-middleware.js
 const jwt = require('jsonwebtoken');
 const { User } = require('../db/models');
 const logger = require('../utils/logger');
+const { v4: uuidv4 } = require('uuid');
+const { validateUUID } = require('../utils/validation');
 
 /**
  * Authentication middleware to protect routes
  * Verifies JWT token and attaches user to request
+ * Supports pass-through authentication from React Native app
  */
 module.exports = async (req, res, next) => {
   try {
@@ -20,17 +23,29 @@ module.exports = async (req, res, next) => {
     
     // Verify token
     try {
+      // Verify the token using the same secret as your React Native app
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       
-      // Find user
-      const user = await User.findByPk(decoded.id);
+      // Ensure externalId is a valid UUID
+      const externalId = decoded.id || decoded.userId || decoded.sub;
+      
+      if (!externalId || !validateUUID(externalId)) {
+        return res.status(401).json({ 
+          error: 'Invalid user identifier', 
+          details: 'The user ID must be a valid UUID'
+        });
+      }
+      
+      // Find or create user based on token data
+      const user = await User.findOrCreateFromToken(decoded);
       
       if (!user) {
-        return res.status(401).json({ error: 'User not found' });
+        return res.status(401).json({ error: 'User not found and could not be created' });
       }
       
       // Attach user to request
       req.user = user;
+      req.tokenData = decoded; // Keep the original token data
       
       next();
     } catch (err) {

@@ -17,9 +17,9 @@ const logger = require('./utils/logger');
 const redisService = require('./services/redis');
 const socketHandlers = require('./socketHandlers');
 const apiRoutes = require('./routes');
-const errorHandler = require('./middleware/errorHandler');
-const requestLogger = require('./middleware/requestLogger');
-const { createUploadMiddleware } = require('./services/fileUpload');
+const errorHandler = require('./middleware/error-middleware');
+const requestLogger = require('./middleware/request-logger');
+const { createUploadMiddleware } = require('./services/file-upload');
 
 // Cluster mode for production (disable for development/debugging)
 const CLUSTER_MODE = process.env.NODE_ENV === 'production' && process.env.DISABLE_CLUSTER !== 'true';

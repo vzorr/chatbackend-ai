@@ -23,6 +23,16 @@ const validateEmail = (email) => {
 };
 
 /**
+ * Validates UUID v4 format
+ * @param {string} uuid - UUID to validate
+ * @returns {boolean} Whether the UUID is valid
+ */
+const validateUUID = (uuid) => {
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  return uuidRegex.test(uuid);
+};
+
+/**
  * Sanitizes a string for logging (removes sensitive data)
  * @param {Object} obj - Object to sanitize
  * @returns {Object} Sanitized object
@@ -55,16 +65,6 @@ const sanitizeForLogging = (obj) => {
   
   sanitizeObject(sanitized);
   return sanitized;
-};
-
-/**
- * Validates UUID v4 format
- * @param {string} uuid - UUID to validate
- * @returns {boolean} Whether the UUID is valid
- */
-const validateUUID = (uuid) => {
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-  return uuidRegex.test(uuid);
 };
 
 /**

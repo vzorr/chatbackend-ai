@@ -1,7 +1,7 @@
 // socketHandlers.js
 const { Op } = require('sequelize');
 const { v4: uuidv4 } = require('uuid');
-const redisAdapter = require('socket.io-redis');
+const Redis = require('ioredis');
 const logger = require('./utils/logger');
 const { 
   User, 
@@ -22,12 +22,18 @@ module.exports = (io) => {
       password: process.env.REDIS_PASSWORD || undefined
     };
     
-    io.adapter(redisAdapter({
-      pubClient: new require('ioredis')(redisConfig),
-      subClient: new require('ioredis')(redisConfig)
-    }));
-    
-    logger.info('Socket.IO connected to Redis adapter');
+    try {
+      const { createAdapter } = require('socket.io-redis');
+      io.adapter(createAdapter({
+        pubClient: new Redis(redisConfig),
+        subClient: new Redis(redisConfig)
+      }));
+      
+      logger.info('Socket.IO connected to Redis adapter');
+    } catch (error) {
+      logger.error(`Failed to connect Socket.IO to Redis: ${error}`);
+      logger.info('Socket.IO will use in-memory adapter');
+    }
   }
 
   // Keep track of online users for quick lookup
@@ -152,18 +158,37 @@ module.exports = (io) => {
             targetConversationId = directConversations[0].id;
           } else {
             // Create new conversation
+            const newConversationId = uuidv4();
             const newConversation = {
-              id: uuidv4(),
+              id: newConversationId,
               participantIds: [userId, receiverId],
               lastMessageAt: new Date()
             };
             
-            const { conversationId: createdId } = await queueService.enqueueConversationOperation(
+            await queueService.enqueueConversationOperation(
               'create',
               newConversation
             );
             
-            targetConversationId = newConversation.id;
+            targetConversationId = newConversationId;
+            
+            // Create participants
+            await ConversationParticipant.bulkCreate([
+              {
+                id: uuidv4(),
+                conversationId: newConversationId,
+                userId: userId,
+                unreadCount: 0,
+                joinedAt: new Date()
+              },
+              {
+                id: uuidv4(),
+                conversationId: newConversationId,
+                userId: receiverId,
+                unreadCount: 1,
+                joinedAt: new Date()
+              }
+            ]);
             
             // Join socket to the new conversation room
             socket.join(`conversation:${targetConversationId}`);
@@ -202,6 +227,28 @@ module.exports = (io) => {
           conversationId: targetConversationId,
           timestamp: Date.now()
         });
+        
+        // Create message directly for immediate feedback
+        await Message.create(messageData);
+        
+        // Update conversation last message time
+        await Conversation.update(
+          { lastMessageAt: new Date() },
+          { where: { id: targetConversationId } }
+        );
+        
+        // Increment unread count for other participants
+        if (targetConversationId) {
+          await ConversationParticipant.increment(
+            'unreadCount',
+            {
+              where: {
+                conversationId: targetConversationId,
+                userId: { [Op.ne]: userId }
+              }
+            }
+          );
+        }
         
         // Broadcast to conversation room
         io.to(`conversation:${targetConversationId}`).emit('new_message', {
@@ -288,7 +335,7 @@ module.exports = (io) => {
         // Update message status in database
         await Message.update(
           { status: 'read' },
-          { where: { id: messageIds } }
+          { where: { id: { [Op.in]: messageIds } } }
         );
         
         // Reset unread count in conversation participant
@@ -307,7 +354,7 @@ module.exports = (io) => {
         
         // Notify senders that their messages were read
         const messages = await Message.findAll({
-          where: { id: messageIds },
+          where: { id: { [Op.in]: messageIds } },
           attributes: ['id', 'senderId', 'conversationId']
         });
         
@@ -363,6 +410,7 @@ module.exports = (io) => {
         
         // Store original version
         await MessageVersion.create({
+          id: uuidv4(),
           messageId,
           versionContent: message.content,
           editedAt: new Date()
@@ -480,8 +528,8 @@ module.exports = (io) => {
             }]
           }],
           order: [[{model: Conversation, as: 'conversation'}, 'lastMessageAt', 'DESC']],
-          limit,
-          offset
+          limit: parseInt(limit),
+          offset: parseInt(offset)
         });
         
         // Get unread counts
@@ -490,10 +538,12 @@ module.exports = (io) => {
         // Format response
         const conversations = await Promise.all(participations.map(async (participation) => {
           const conversation = participation.conversation;
+          if (!conversation) return null;
           
           // Get participant details
+          const participantIds = conversation.participantIds || [];
           const participantDetails = await User.findAll({
-            where: { id: { [Op.in]: conversation.participantIds } },
+            where: { id: { [Op.in]: participantIds } },
             attributes: ['id', 'name', 'avatar', 'isOnline', 'lastSeen']
           });
           
@@ -504,14 +554,18 @@ module.exports = (io) => {
             lastMessageAt: conversation.lastMessageAt,
             participants: participantDetails,
             unreadCount: unreadCounts[conversation.id] || participation.unreadCount || 0,
-            lastMessage: conversation.messages && conversation.messages[0] ? conversation.messages[0] : null
+            lastMessage: conversation.messages && conversation.messages.length > 0 ? conversation.messages[0] : null
           };
         }));
         
+        // Filter out nulls from any conversations that might have been deleted
+        const validConversations = conversations.filter(c => c !== null);
+        
         socket.emit('conversations_list', {
-          conversations,
-          offset,
-          limit,
+          conversations: validConversations,
+          total: validConversations.length,
+          offset: parseInt(offset),
+          limit: parseInt(limit),
           timestamp: Date.now()
         });
         
@@ -524,7 +578,8 @@ module.exports = (io) => {
       }
     });
 
-    socket.on('fetch_conversation_messages', async ({ conversationId, limit = 50, offset = 0 }) => {
+ 
+    socket.on('fetch_conversation_messages', async ({ conversationId, limit = 50, offset = 0, before }) => {
       try {
         // Verify user is a participant
         const participation = await ConversationParticipant.findOne({
@@ -539,26 +594,24 @@ module.exports = (io) => {
           return;
         }
         
-        // Try to get from cache first
-        let messages = await redisService.getConversationMessages(conversationId, limit, offset);
+        // Build the where clause
+        const where = { 
+          conversationId,
+          deleted: false
+        };
         
-        // Fall back to database if cache miss
-        if (!messages || messages.length === 0) {
-          messages = await Message.findAll({
-            where: { 
-              conversationId,
-              deleted: false
-            },
-            order: [['createdAt', 'DESC']],
-            limit,
-            offset
-          });
-          
-          // Cache messages for future use
-          for (const message of messages) {
-            await redisService.cacheMessage(message);
-          }
+        // Add time condition if 'before' is specified
+        if (before) {
+          where.createdAt = { [Op.lt]: new Date(before) };
         }
+        
+        // Get messages from database
+        const messages = await Message.findAll({
+          where,
+          order: [['createdAt', 'DESC']],
+          limit: parseInt(limit),
+          offset: parseInt(offset)
+        });
         
         // Get sender info
         const senderIds = [...new Set(messages.map(m => m.senderId))];
@@ -572,18 +625,80 @@ module.exports = (io) => {
           return map;
         }, {});
         
-        // Enrich messages with sender info
-        const enrichedMessages = messages.map(message => ({
-          ...message,
-          sender: senderMap[message.senderId] || { id: message.senderId }
-        }));
+        // Cache messages for future use
+        for (const message of messages) {
+          await redisService.cacheMessage(message);
+        }
+        
+        // Format messages for response
+        const formattedMessages = messages.map(message => {
+          const sender = senderMap[message.senderId] || { id: message.senderId };
+          
+          return {
+            id: message.id,
+            conversationId: message.conversationId,
+            senderId: message.senderId,
+            sender: {
+              id: sender.id,
+              name: sender.name || 'Unknown',
+              avatar: sender.avatar
+            },
+            receiverId: message.receiverId,
+            type: message.type,
+            content: message.content,
+            status: message.status,
+            clientTempId: message.clientTempId,
+            createdAt: message.createdAt,
+            updatedAt: message.updatedAt
+          };
+        });
+        
+        // Mark messages as delivered if they're not read yet
+        const unreadMessageIds = messages
+          .filter(m => m.senderId !== userId && m.status === 'sent')
+          .map(m => m.id);
+          
+        if (unreadMessageIds.length > 0) {
+          await Message.update(
+            { status: 'delivered' },
+            { where: { id: { [Op.in]: unreadMessageIds } } }
+          );
+          
+          // Notify senders about delivered messages
+          const deliveredMessages = await Message.findAll({
+            where: { id: { [Op.in]: unreadMessageIds } },
+            attributes: ['id', 'senderId']
+          });
+          
+          // Group by sender
+          const deliveredBySender = {};
+          deliveredMessages.forEach(message => {
+            if (!deliveredBySender[message.senderId]) {
+              deliveredBySender[message.senderId] = [];
+            }
+            deliveredBySender[message.senderId].push(message.id);
+          });
+          
+          // Notify each sender
+          Object.entries(deliveredBySender).forEach(([senderId, messageIds]) => {
+            const senderSocketId = userSocketMap.get(senderId);
+            if (senderSocketId) {
+              io.to(senderSocketId).emit('messages_delivered', {
+                messageIds,
+                deliveredTo: userId,
+                deliveredAt: new Date().toISOString()
+              });
+            }
+          });
+        }
         
         // Reply to client
         socket.emit('conversation_messages', {
           conversationId,
-          messages: enrichedMessages,
-          offset,
-          limit,
+          messages: formattedMessages,
+          offset: parseInt(offset),
+          limit: parseInt(limit),
+          hasMore: messages.length === parseInt(limit),
           timestamp: Date.now()
         });
         
@@ -596,120 +711,483 @@ module.exports = (io) => {
       }
     });
 
-    // Typing indicators
-    socket.on('typing', async ({ conversationId }) => {
-      try {
-        // Verify user is a participant
-        const participation = await ConversationParticipant.findOne({
-          where: { conversationId, userId }
-        });
-        
-        if (!participation) {
-          return; // Silently ignore
-        }
-        
-        // Set typing status in Redis
-        await redisService.setUserTyping(userId, conversationId);
-        
-        // Broadcast to conversation participants
-        socket.to(`conversation:${conversationId}`).emit('user_typing', {
-          userId,
-          conversationId,
-          userName: socket.user.name,
-          timestamp: Date.now()
-        });
-        
-      } catch (error) {
-        logger.error(`Error handling typing: ${error}`);
-      }
-    });
+   // Typing indicators
+   socket.on('typing', async ({ conversationId }) => {
+     try {
+       // Verify user is a participant
+       const participation = await ConversationParticipant.findOne({
+         where: { conversationId, userId }
+       });
+       
+       if (!participation) {
+         return; // Silently ignore
+       }
+       
+       // Set typing status in Redis
+       await redisService.setUserTyping(userId, conversationId);
+       
+       // Broadcast to conversation participants
+       socket.to(`conversation:${conversationId}`).emit('user_typing', {
+         userId,
+         conversationId,
+         userName: socket.user.name,
+         timestamp: Date.now()
+       });
+       
+     } catch (error) {
+       logger.error(`Error handling typing: ${error}`);
+     }
+   });
 
-    socket.on('get_typing_users', async ({ conversationId }) => {
-      try {
-        const typingUsers = await redisService.getUsersTyping(conversationId);
-        
-        // Get user details
-        const users = await User.findAll({
-          where: { id: { [Op.in]: typingUsers } },
-          attributes: ['id', 'name']
-        });
-        
-        socket.emit('typing_users', {
-          conversationId,
-          users,
-          timestamp: Date.now()
-        });
-        
-      } catch (error) {
-        logger.error(`Error handling get_typing_users: ${error}`);
-      }
-    });
+   socket.on('get_typing_users', async ({ conversationId }) => {
+     try {
+       const typingUsers = await redisService.getUsersTyping(conversationId);
+       
+       // Get user details
+       const users = await User.findAll({
+         where: { id: { [Op.in]: typingUsers } },
+         attributes: ['id', 'name']
+       });
+       
+       socket.emit('typing_users', {
+         conversationId,
+         users,
+         timestamp: Date.now()
+       });
+       
+     } catch (error) {
+       logger.error(`Error handling get_typing_users: ${error}`);
+     }
+   });
 
-    // Presence handlers
-    socket.on('get_online_status', async ({ userIds }) => {
-      try {
-        const presenceMap = await redisService.getUsersPresence(userIds);
-        
-        // Format response
-        const statusMap = {};
-        Object.entries(presenceMap).forEach(([userId, presence]) => {
-          statusMap[userId] = presence ? presence.isOnline : false;
-        });
-        
-        socket.emit('online_status', {
-          statuses: statusMap,
-          timestamp: Date.now()
-        });
-        
-      } catch (error) {
-        logger.error(`Error handling get_online_status: ${error}`);
-      }
-    });
+   // Presence handlers
+   socket.on('get_online_status', async ({ userIds }) => {
+     try {
+       const presenceMap = await redisService.getUsersPresence(userIds);
+       
+       // Format response
+       const statusMap = {};
+       Object.entries(presenceMap).forEach(([userId, presence]) => {
+         statusMap[userId] = presence ? {
+           isOnline: presence.isOnline,
+           lastSeen: presence.lastSeen
+         } : {
+           isOnline: false,
+           lastSeen: null
+         };
+       });
+       
+       socket.emit('online_status', {
+         statuses: statusMap,
+         timestamp: Date.now()
+       });
+       
+     } catch (error) {
+       logger.error(`Error handling get_online_status: ${error}`);
+     }
+   });
 
-    // Clean up on disconnect
-    socket.on('disconnect', async () => {
-      try {
-        // Update user status
-        await queueService.enqueuePresenceUpdate(userId, false);
-        
-        // Remove from maps
-        userSocketMap.delete(userId);
-        socketUserMap.delete(socketId);
-        
-        // Broadcast user status to interested parties
-        broadcastUserStatus(userId, false);
-        
-        logger.info(`User ${userId} disconnected from socket ${socketId}`);
-      } catch (error) {
-        logger.error(`Error handling disconnect: ${error}`);
-      }
-    });
-  });
+   // Create or join conversation
+   socket.on('create_conversation', async ({ participants, jobId, jobTitle }) => {
+     try {
+       if (!participants || !Array.isArray(participants) || participants.length === 0) {
+         socket.emit('error', {
+           code: 'INVALID_REQUEST',
+           message: 'At least one participant is required'
+         });
+         return;
+       }
+       
+       // Ensure current user is included
+       const allParticipantIds = Array.from(new Set([userId, ...participants]));
+       
+       // Check if conversation already exists with exactly these participants
+       const existingConversations = await Conversation.findAll({
+         where: {
+           participantIds: {
+             [Op.contains]: allParticipantIds
+           }
+         }
+       });
+       
+       // Find exact match (same participants, no more, no less)
+       const exactMatch = existingConversations.find(conv => 
+         conv.participantIds.length === allParticipantIds.length && 
+         allParticipantIds.every(id => conv.participantIds.includes(id))
+       );
+       
+       if (exactMatch) {
+         // Return existing conversation
+         const participantDetails = await User.findAll({
+           where: { id: { [Op.in]: exactMatch.participantIds } },
+           attributes: ['id', 'name', 'avatar', 'isOnline', 'lastSeen']
+         });
+         
+         socket.emit('conversation_created', {
+           isNew: false,
+           conversation: {
+             id: exactMatch.id,
+             jobId: exactMatch.jobId,
+             jobTitle: exactMatch.jobTitle,
+             participants: participantDetails,
+             participantIds: exactMatch.participantIds,
+             lastMessageAt: exactMatch.lastMessageAt,
+             createdAt: exactMatch.createdAt
+           }
+         });
+         
+         // Join the conversation room
+         socket.join(`conversation:${exactMatch.id}`);
+         
+         return;
+       }
+       
+       // Create new conversation
+       const conversationId = uuidv4();
+       const newConversation = {
+         id: conversationId,
+         jobId,
+         jobTitle,
+         participantIds: allParticipantIds,
+         lastMessageAt: new Date()
+       };
+       
+       // Create conversation in database
+       await Conversation.create(newConversation);
+       
+       // Create participants
+       const participantRecords = allParticipantIds.map(participantId => ({
+         id: uuidv4(),
+         conversationId,
+         userId: participantId,
+         unreadCount: participantId === userId ? 0 : 0, // No messages yet
+         joinedAt: new Date()
+       }));
+       
+       await ConversationParticipant.bulkCreate(participantRecords);
+       
+       // Get participant details
+       const participantDetails = await User.findAll({
+         where: { id: { [Op.in]: allParticipantIds } },
+         attributes: ['id', 'name', 'avatar', 'isOnline', 'lastSeen']
+       });
+       
+       // Join the conversation room
+       socket.join(`conversation:${conversationId}`);
+       
+       // Notify creator about successful creation
+       socket.emit('conversation_created', {
+         isNew: true,
+         conversation: {
+           id: conversationId,
+           jobId,
+           jobTitle,
+           participants: participantDetails,
+           participantIds: allParticipantIds,
+           lastMessageAt: new Date(),
+           createdAt: new Date()
+         }
+       });
+       
+       // Notify other participants that they've been added to a conversation
+       allParticipantIds.forEach(participantId => {
+         if (participantId !== userId) {
+           const participantSocketId = userSocketMap.get(participantId);
+           if (participantSocketId) {
+             io.to(participantSocketId).emit('added_to_conversation', {
+               conversationId,
+               addedBy: userId,
+               conversation: {
+                 id: conversationId,
+                 jobId,
+                 jobTitle,
+                 participants: participantDetails,
+                 participantIds: allParticipantIds,
+                 lastMessageAt: new Date(),
+                 createdAt: new Date()
+               }
+             });
+             
+             // Add them to the conversation room
+             const participantSocket = io.sockets.sockets.get(participantSocketId);
+             if (participantSocket) {
+               participantSocket.join(`conversation:${conversationId}`);
+             }
+           }
+         }
+       });
+       
+     } catch (error) {
+       logger.error(`Error handling create_conversation: ${error}`);
+       socket.emit('error', {
+         code: 'CREATE_FAILED',
+         message: 'Failed to create conversation'
+       });
+     }
+   });
 
-  // Helper function to broadcast user status
-  const broadcastUserStatus = async (userId, isOnline) => {
-    try {
-      // Get user's participations
-      const participations = await ConversationParticipant.findAll({
-        where: { userId }
-      });
-      
-      // Broadcast to all conversations
-      for (const { conversationId } of participations) {
-        io.to(`conversation:${conversationId}`).emit('user_status_change', {
-          userId,
-          isOnline,
-          lastSeen: isOnline ? null : new Date().toISOString()
-        });
-      }
-    } catch (error) {
-      logger.error(`Error broadcasting user status: ${error}`);
-    }
-  };
+   // Leave conversation
+   socket.on('leave_conversation', async ({ conversationId }) => {
+     try {
+       // Verify user is a participant
+       const participation = await ConversationParticipant.findOne({
+         where: { conversationId, userId }
+       });
+       
+       if (!participation) {
+         socket.emit('error', {
+           code: 'NOT_AUTHORIZED',
+           message: 'Not a participant in this conversation'
+         });
+         return;
+       }
+       
+       // Get conversation
+       const conversation = await Conversation.findByPk(conversationId);
+       
+       if (!conversation) {
+         socket.emit('error', {
+           code: 'NOT_FOUND',
+           message: 'Conversation not found'
+         });
+         return;
+       }
+       
+       // Update participant record
+       participation.leftAt = new Date();
+       await participation.save();
+       
+       // Remove user from conversation room
+       socket.leave(`conversation:${conversationId}`);
+       
+       // Create system message
+       const systemMessage = {
+         id: uuidv4(),
+         conversationId,
+         senderId: userId,
+         receiverId: null,
+         type: 'system',
+         content: {
+           text: `${socket.user.name} left the conversation`,
+           action: 'leave',
+           userId
+         },
+         status: 'sent',
+         isSystemMessage: true,
+         createdAt: new Date(),
+         updatedAt: new Date()
+       };
+       
+       // Create message in database
+       await Message.create(systemMessage);
+       
+       // Update conversation last message time
+       await Conversation.update(
+         { lastMessageAt: new Date() },
+         { where: { id: conversationId } }
+       );
+       
+       // Notify other participants
+       socket.to(`conversation:${conversationId}`).emit('user_left_conversation', {
+         conversationId,
+         userId,
+         userName: socket.user.name,
+         leftAt: new Date().toISOString(),
+         message: systemMessage
+       });
+       
+       // Confirm to user
+       socket.emit('left_conversation', {
+         conversationId,
+         leftAt: new Date().toISOString()
+       });
+       
+     } catch (error) {
+       logger.error(`Error handling leave_conversation: ${error}`);
+       socket.emit('error', {
+         code: 'LEAVE_FAILED',
+         message: 'Failed to leave conversation'
+       });
+     }
+   });
 
-  return {
-    userSocketMap,
-    socketUserMap,
-    broadcastUserStatus
-  };
+   // Add users to conversation
+   socket.on('add_users_to_conversation', async ({ conversationId, userIds }) => {
+     try {
+       // Verify user is a participant
+       const participation = await ConversationParticipant.findOne({
+         where: { conversationId, userId }
+       });
+       
+       if (!participation) {
+         socket.emit('error', {
+           code: 'NOT_AUTHORIZED',
+           message: 'Not a participant in this conversation'
+         });
+         return;
+       }
+       
+       // Get conversation
+       const conversation = await Conversation.findByPk(conversationId);
+       
+       if (!conversation) {
+         socket.emit('error', {
+           code: 'NOT_FOUND',
+           message: 'Conversation not found'
+         });
+         return;
+       }
+       
+       // Filter out users already in the conversation
+       const newUserIds = userIds.filter(id => !conversation.participantIds.includes(id));
+       
+       if (newUserIds.length === 0) {
+         socket.emit('error', {
+           code: 'ALREADY_MEMBERS',
+           message: 'All users are already members of this conversation'
+         });
+         return;
+       }
+       
+       // Update conversation participants
+       const updatedParticipantIds = [...conversation.participantIds, ...newUserIds];
+       conversation.participantIds = updatedParticipantIds;
+       await conversation.save();
+       
+       // Create participant records
+       const participantRecords = newUserIds.map(id => ({
+         id: uuidv4(),
+         conversationId,
+         userId: id,
+         unreadCount: 0,
+         joinedAt: new Date()
+       }));
+       
+       await ConversationParticipant.bulkCreate(participantRecords);
+       
+       // Get new user details
+       const newUsers = await User.findAll({
+         where: { id: { [Op.in]: newUserIds } },
+         attributes: ['id', 'name', 'avatar']
+       });
+       
+       // Create system message
+       const newUserNames = newUsers.map(u => u.name).join(', ');
+       const systemMessage = {
+         id: uuidv4(),
+         conversationId,
+         senderId: userId,
+         receiverId: null,
+         type: 'system',
+         content: {
+           text: `${socket.user.name} added ${newUserNames} to the conversation`,
+           action: 'add_users',
+           addedBy: userId,
+           addedUsers: newUserIds
+         },
+         status: 'sent',
+         isSystemMessage: true,
+         createdAt: new Date(),
+         updatedAt: new Date()
+       };
+       
+       // Create message in database
+       await Message.create(systemMessage);
+       
+       // Update conversation last message time
+       await Conversation.update(
+         { lastMessageAt: new Date() },
+         { where: { id: conversationId } }
+       );
+       
+       // Notify existing participants
+       io.to(`conversation:${conversationId}`).emit('users_added_to_conversation', {
+         conversationId,
+         addedBy: userId,
+         addedUsers: newUsers,
+         timestamp: Date.now(),
+         message: systemMessage
+       });
+       
+       // Notify new participants
+       newUserIds.forEach(newUserId => {
+         const newUserSocketId = userSocketMap.get(newUserId);
+         if (newUserSocketId) {
+           const newUserSocket = io.sockets.sockets.get(newUserSocketId);
+           if (newUserSocket) {
+             // Add to conversation room
+             newUserSocket.join(`conversation:${conversationId}`);
+             
+             // Send notification
+             io.to(newUserSocketId).emit('added_to_conversation', {
+               conversationId,
+               addedBy: userId,
+               conversation: {
+                 id: conversation.id,
+                 jobId: conversation.jobId,
+                 jobTitle: conversation.jobTitle,
+                 participants: updatedParticipantIds,
+                 lastMessageAt: conversation.lastMessageAt,
+                 createdAt: conversation.createdAt
+               }
+             });
+           }
+         }
+       });
+       
+     } catch (error) {
+       logger.error(`Error handling add_users_to_conversation: ${error}`);
+       socket.emit('error', {
+         code: 'ADD_FAILED',
+         message: 'Failed to add users to conversation'
+       });
+     }
+   });
+
+   // Clean up on disconnect
+   socket.on('disconnect', async () => {
+     try {
+       // Update user status
+       await queueService.enqueuePresenceUpdate(userId, false);
+       
+       // Remove from maps
+       userSocketMap.delete(userId);
+       socketUserMap.delete(socketId);
+       
+       // Broadcast user status to interested parties
+       broadcastUserStatus(userId, false);
+       
+       logger.info(`User ${userId} disconnected from socket ${socketId}`);
+     } catch (error) {
+       logger.error(`Error handling disconnect: ${error}`);
+     }
+   });
+ });
+
+ // Helper function to broadcast user status
+ const broadcastUserStatus = async (userId, isOnline) => {
+   try {
+     // Get user's participations
+     const participations = await ConversationParticipant.findAll({
+       where: { userId }
+     });
+     
+     // Broadcast to all conversations
+     for (const { conversationId } of participations) {
+       io.to(`conversation:${conversationId}`).emit('user_status_change', {
+         userId,
+         isOnline,
+         lastSeen: isOnline ? null : new Date().toISOString()
+       });
+     }
+   } catch (error) {
+     logger.error(`Error broadcasting user status: ${error}`);
+   }
+ };
+
+ return {
+   userSocketMap,
+   socketUserMap,
+   broadcastUserStatus
+ };
 };

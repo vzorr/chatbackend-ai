@@ -4,39 +4,147 @@ const { v4: uuidv4 } = require('uuid');
 const jwt = require('jsonwebtoken');
 const router = express.Router();
 const { User, DeviceToken } = require('../db/models');
-const { validatePhone } = require('../utils/validation');
+const { validatePhone, validateUUID } = require('../utils/validation');
 const logger = require('../utils/logger');
 const redisService = require('../services/redis');
 const queueService = require('../services/queue');
-const authenticate = require('../middleware/authenticate');
+const authenticate = require('../middleware/auth-middleware');
 
-// Generate OTP
-router.post('/send-otp', async (req, res, next) => {
+// Endpoint for mobile app authentication pass-through
+router.post('/verify-token', async (req, res, next) => {
   try {
-    const { phone } = req.body;
+    const { token, deviceToken, deviceType = 'mobile', platform } = req.body;
     
-    if (!phone || !validatePhone(phone)) {
-      return res.status(400).json({ error: 'Invalid phone number' });
+    if (!token) {
+      return res.status(400).json({ error: 'Token is required' });
     }
     
-    // In a real system, you would send an SMS with OTP
-    // For this implementation, we'll use a fixed OTP for demo
-    const otp = '123456';
+    try {
+      // Verify the token
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      
+      // Ensure user ID is a valid UUID
+      const externalId = decoded.id || decoded.userId || decoded.sub;
+      
+      if (!externalId || !validateUUID(externalId)) {
+        return res.status(400).json({ 
+          error: 'Invalid user ID format', 
+          details: 'User ID must be a valid UUID' 
+        });
+      }
+      
+      // Find or create user based on token
+      const user = await User.findOrCreateFromToken(decoded);
+      
+      // Store device token if provided
+      if (deviceToken) {
+        await DeviceToken.findOrCreate({
+          where: { token: deviceToken },
+          defaults: {
+            id: uuidv4(),
+            userId: user.id,
+            token: deviceToken,
+            deviceType,
+            platform,
+            lastUsed: new Date()
+          }
+        });
+      }
+      
+      // Update user's online status
+      await queueService.enqueuePresenceUpdate(user.id, true);
+      
+      // Create a chat-specific token
+      const chatToken = jwt.sign(
+        { 
+          id: user.id, 
+          externalId: user.externalId,
+          chatUser: true // Flag to identify this as a chat-specific token
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: '30d' }
+      );
+      
+      res.json({
+        token: chatToken,
+        user: {
+          id: user.id,
+          externalId: user.externalId,
+          name: user.name,
+          phone: user.phone,
+          email: user.email,
+          avatar: user.avatar
+        }
+      });
+    } catch (err) {
+      if (err.name === 'TokenExpiredError') {
+        return res.status(401).json({ error: 'Token expired', code: 'TOKEN_EXPIRED' });
+      } else if (err.name === 'JsonWebTokenError') {
+        return res.status(401).json({ error: 'Invalid token', code: 'INVALID_TOKEN' });
+      } else {
+        logger.error(`Token verification error: ${err}`);
+        return res.status(401).json({ error: 'Authentication failed' });
+      }
+    }
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Create a user account directly for the mobile app
+router.post('/register-external', async (req, res, next) => {
+  try {
+    const { externalId, name, email, phone, avatar } = req.body;
     
-    // Store OTP in Redis with expiration
-    await redisService.redisClient.set(
-      `otp:${phone}`,
-      otp,
-      'EX',
-      300 // 5 minutes expiration
+    // Validate externalId is a UUID
+    if (!externalId || !validateUUID(externalId)) {
+      return res.status(400).json({ 
+        error: 'Invalid external ID format', 
+        details: 'External ID must be a valid UUID'
+      });
+    }
+    
+    // Check if user already exists
+    let user = await User.findOne({ where: { externalId } });
+    
+    if (user) {
+      // Update existing user
+      await user.update({
+        name: name || user.name,
+        email: email || user.email,
+        phone: phone || user.phone,
+        avatar: avatar || user.avatar
+      });
+    } else {
+      // Create new user
+      user = await User.create({
+        id: uuidv4(),
+        externalId,
+        name: name || 'User',
+        email,
+        phone,
+        avatar,
+        role: 'client'
+      });
+    }
+    
+    // Generate token
+    const token = jwt.sign(
+      { id: user.id, externalId: user.externalId },
+      process.env.JWT_SECRET,
+      { expiresIn: '30d' }
     );
     
-    // Log this instead of actually sending SMS in development
-    logger.info(`OTP for ${phone}: ${otp}`);
-    
-    res.json({ 
-      message: 'OTP sent successfully',
-      expiresIn: 300 // seconds
+    res.status(user ? 200 : 201).json({
+      token,
+      user: {
+        id: user.id,
+        externalId: user.externalId,
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        avatar: user.avatar
+      }
     });
     
   } catch (error) {
@@ -44,73 +152,26 @@ router.post('/send-otp', async (req, res, next) => {
   }
 });
 
-// Verify OTP and login/register
-router.post('/verify-otp', async (req, res, next) => {
+// Get user profile from token
+router.get('/profile', authenticate, async (req, res, next) => {
   try {
-    const { phone, otp, deviceToken, deviceType = 'mobile', platform } = req.body;
+    const userId = req.user.id;
     
-    if (!phone || !validatePhone(phone) || !otp) {
-      return res.status(400).json({ error: 'Phone number and OTP are required' });
-    }
-    
-    // Get stored OTP from Redis
-    const storedOtp = await redisService.redisClient.get(`otp:${phone}`);
-    
-    if (!storedOtp || storedOtp !== otp) {
-      return res.status(401).json({ error: 'Invalid OTP' });
-    }
-    
-    // Delete OTP after successful verification
-    await redisService.redisClient.del(`otp:${phone}`);
-    
-    // Find or create user
-    let user = await User.findOne({ where: { phone } });
-    let isNewUser = false;
+    const user = await User.findByPk(userId);
     
     if (!user) {
-      // New user registration
-      user = await User.create({
-        id: uuidv4(),
-        phone,
-        name: `User ${phone.slice(-4)}`, // Default name
-        isOnline: true
-      });
-      isNewUser = true;
+      return res.status(404).json({ error: 'User not found' });
     }
-    
-    // Store device token if provided
-    if (deviceToken) {
-      await DeviceToken.findOrCreate({
-        where: { token: deviceToken },
-        defaults: {
-          id: uuidv4(),
-          userId: user.id,
-          token: deviceToken,
-          deviceType,
-          platform,
-          lastUsed: new Date()
-        }
-      });
-    }
-    
-    // Generate JWT token
-    const token = jwt.sign(
-      { id: user.id, phone: user.phone },
-      process.env.JWT_SECRET,
-      { expiresIn: '30d' }
-    );
-    
-    // Update user's online status
-    await queueService.enqueuePresenceUpdate(user.id, true);
     
     res.json({
-      token,
       user: {
         id: user.id,
+        externalId: user.externalId,
         name: user.name,
         phone: user.phone,
+        email: user.email,
         avatar: user.avatar,
-        isNewUser
+        role: user.role
       }
     });
     
@@ -122,12 +183,14 @@ router.post('/verify-otp', async (req, res, next) => {
 // Update user profile
 router.put('/profile', authenticate, async (req, res, next) => {
   try {
-    const { name, avatar } = req.body;
+    const { name, avatar, phone, email } = req.body;
     const userId = req.user.id;
     
     const updates = {};
     if (name !== undefined) updates.name = name;
     if (avatar !== undefined) updates.avatar = avatar;
+    if (phone !== undefined) updates.phone = phone;
+    if (email !== undefined) updates.email = email;
     
     // Update user in database
     await User.update(updates, { where: { id: userId } });
@@ -138,8 +201,10 @@ router.put('/profile', authenticate, async (req, res, next) => {
     res.json({
       user: {
         id: user.id,
+        externalId: user.externalId,
         name: user.name,
         phone: user.phone,
+        email: user.email,
         avatar: user.avatar
       }
     });
@@ -202,23 +267,4 @@ router.post('/logout', authenticate, async (req, res, next) => {
   }
 });
 
-// Refresh token
-router.post('/refresh-token', authenticate, async (req, res, next) => {
-  try {
-    const user = req.user;
-    
-    // Generate new JWT token
-    const token = jwt.sign(
-      { id: user.id, phone: user.phone },
-      process.env.JWT_SECRET,
-      { expiresIn: '30d' }
-    );
-    
-    res.json({ token });
-    
-  } catch (error) {
-    next(error);
-  }
-});
-
-module.exports = router; =
+module.exports = router;
