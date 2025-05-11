@@ -10,6 +10,62 @@ const redisService = require('../services/redis');
 const queueService = require('../services/queue');
 const authenticate = require('../middleware/auth-middleware');
 
+const passport = require('passport');
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const FacebookStrategy = require('passport-facebook').Strategy;
+
+// Setup Passport strategies if config is available
+if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
+  passport.use(new GoogleStrategy({
+    clientID: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    callbackURL: `${process.env.API_BASE_URL}/api/auth/google/callback`
+  }, async (accessToken, refreshToken, profile, done) => {
+    try {
+      // Find or create user based on Google profile
+      let user = await User.findOne({ 
+        where: { 
+          email: profile.emails[0].value 
+        }
+      });
+      
+      if (!user) {
+        user = await User.create({
+          id: uuidv4(),
+          name: profile.displayName,
+          email: profile.emails[0].value,
+          avatar: profile.photos[0].value,
+          role: 'client'
+        });
+      }
+      
+      return done(null, user);
+    } catch (error) {
+      return done(error);
+    }
+  }));
+}
+
+// Google OAuth routes
+router.get('/google', passport.authenticate('google', {
+  scope: ['profile', 'email']
+}));
+
+router.get('/google/callback', passport.authenticate('google', {
+  failureRedirect: '/login'
+}), async (req, res) => {
+  // Generate JWT token
+  const token = jwt.sign(
+    { id: req.user.id },
+    process.env.JWT_SECRET,
+    { expiresIn: '30d' }
+  );
+  
+  // Redirect to app with token
+  res.redirect(`${process.env.APP_URL}/auth?token=${token}`);
+});
+
+
 // Endpoint for mobile app authentication pass-through
 router.post('/verify-token', async (req, res, next) => {
   try {
@@ -243,6 +299,57 @@ router.post('/register-device', authenticate, async (req, res, next) => {
     next(error);
   }
 });
+
+// routes/auth.js (add refresh token endpoint)
+router.post('/refresh-token', async (req, res, next) => {
+    try {
+      const { refreshToken } = req.body;
+      
+      if (!refreshToken) {
+        return res.status(400).json({ error: 'Refresh token is required' });
+      }
+      
+      // Verify the refresh token
+      try {
+        const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+        
+        // Find user
+        const user = await User.findByPk(decoded.id);
+        
+        if (!user) {
+          return res.status(404).json({ error: 'User not found' });
+        }
+        
+        // Generate new access token
+        const token = jwt.sign(
+          { id: user.id, externalId: user.externalId },
+          process.env.JWT_SECRET,
+          { expiresIn: '24h' }
+        );
+        
+        res.json({
+          token,
+          user: {
+            id: user.id,
+            externalId: user.externalId,
+            name: user.name,
+            email: user.email,
+            phone: user.phone,
+            avatar: user.avatar
+          }
+        });
+        
+      } catch (err) {
+        return res.status(401).json({ 
+          error: 'Invalid refresh token', 
+          code: 'INVALID_REFRESH_TOKEN' 
+        });
+      }
+      
+    } catch (error) {
+      next(error);
+    }
+  });
 
 // Logout
 router.post('/logout', authenticate, async (req, res, next) => {

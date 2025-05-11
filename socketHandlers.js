@@ -14,6 +14,13 @@ const redisService = require('./services/redis');
 const queueService = require('./services/queue');
 
 module.exports = (io) => {
+  // Socket.IO configuration optimized for React Native and other clients
+  if (io) {
+    io.engine.on("connection_error", (err) => {
+      logger.error(`Socket.IO connection error: ${err.message}`);
+    });
+  }
+
   // Use Redis adapter for scalability across multiple nodes
   if (process.env.REDIS_HOST) {
     const redisConfig = {
@@ -43,7 +50,30 @@ module.exports = (io) => {
   // Socket middleware for authentication and logging
   io.use(async (socket, next) => {
     try {
-      const userId = socket.handshake.auth.userId || socket.handshake.query.userId;
+      // Support for various client formats of authentication
+      let userId = null;
+      
+      // Check auth in different places to support various client implementations
+      const authToken = socket.handshake.auth.token || 
+                        socket.handshake.headers.authorization?.replace('Bearer ', '') ||
+                        socket.handshake.query.token;
+                        
+      const directUserId = socket.handshake.auth.userId || 
+                          socket.handshake.query.userId;
+      
+      if (directUserId) {
+        // Client provided user ID directly
+        userId = directUserId;
+      } else if (authToken) {
+        // Client provided a JWT token
+        try {
+          const jwt = require('jsonwebtoken');
+          const decoded = jwt.verify(authToken, process.env.JWT_SECRET);
+          userId = decoded.id || decoded.userId || decoded.sub;
+        } catch (err) {
+          return next(new Error('Invalid authentication token'));
+        }
+      }
       
       if (!userId) {
         return next(new Error('Authentication required'));
@@ -101,6 +131,13 @@ module.exports = (io) => {
         timestamp: Date.now()
       });
       
+      // Also send connection_success for React Native clients
+      socket.emit('connection_success', {
+        userId,
+        socketId,
+        timestamp: Date.now()
+      });
+      
     } catch (error) {
       logger.error(`Error handling socket connection: ${error}`);
     }
@@ -127,8 +164,11 @@ module.exports = (io) => {
           conversationId,
           messageType = 'text',
           textMsg,
+          text, // Support both naming conventions
           messageImages = [],
+          images = [], // Support both naming conventions
           audioFile = '',
+          audio = '', // Support both naming conventions
           replyToMessageId = null,
           attachments = []
         } = messagePayload;
@@ -195,6 +235,11 @@ module.exports = (io) => {
           }
         }
         
+        // Support different field naming conventions from different clients
+        const finalTextContent = textMsg || text || '';
+        const finalImages = messageImages.length ? messageImages : images;
+        const finalAudio = audioFile || audio;
+        
         // Prepare message for database
         const messageData = {
           id: messageId,
@@ -204,9 +249,9 @@ module.exports = (io) => {
           receiverId: receiverId || null,
           type: messageType,
           content: {
-            text: textMsg,
-            images: messageImages,
-            audio: audioFile,
+            text: finalTextContent,
+            images: finalImages,
+            audio: finalAudio,
             replyTo: replyToMessageId,
             attachments
           },
@@ -250,14 +295,27 @@ module.exports = (io) => {
           );
         }
         
-        // Broadcast to conversation room
-        io.to(`conversation:${targetConversationId}`).emit('new_message', {
+        // Get sender info for the response
+        const sender = {
+          id: userId,
+          name: socket.user.name,
+          avatar: socket.user.avatar
+        };
+        
+        const messageWithSender = {
           ...messageData,
-          sender: {
-            id: userId,
-            name: socket.user.name,
-            avatar: socket.user.avatar
-          }
+          sender
+        };
+        
+        // Broadcast to conversation room
+        io.to(`conversation:${targetConversationId}`).emit('new_message', messageWithSender);
+        
+        // Also emit message_sent for compatibility with some clients
+        socket.emit('message_sent', {
+          id: messageId,
+          clientTempId,
+          conversationId: targetConversationId,
+          timestamp: Date.now()
         });
         
         // Send notifications for offline users
@@ -288,7 +346,7 @@ module.exports = (io) => {
                     id: userId,
                     name: socket.user.name
                   },
-                  preview: textMsg ? textMsg.substring(0, 100) : 'New message'
+                  preview: finalTextContent ? finalTextContent.substring(0, 100) : 'New message'
                 }
               );
             }
@@ -351,6 +409,9 @@ module.exports = (io) => {
         
         // Confirm to user
         socket.emit('messages_marked_read', { messageIds });
+        
+        // Also emit with message_read for compatibility
+        socket.emit('message_read', { messageIds });
         
         // Notify senders that their messages were read
         const messages = await Message.findAll({
@@ -500,6 +561,12 @@ module.exports = (io) => {
           }
         }
         
+        // Confirm to sender
+        socket.emit('message_deleted_confirmation', {
+          messageId,
+          deletedAt: new Date().toISOString()
+        });
+        
       } catch (error) {
         logger.error(`Error handling delete_message: ${error}`);
         socket.emit('error', { 
@@ -578,6 +645,74 @@ module.exports = (io) => {
       }
     });
 
+    // Also support get_conversations for React Native clients
+    socket.on('get_conversations', async (data = {}) => {
+      try {
+        const { limit = 20, offset = 0 } = data;
+        
+        // Reuse the same logic as fetch_conversations
+        const participations = await ConversationParticipant.findAll({
+          where: { userId },
+          include: [{
+            model: Conversation,
+            as: 'conversation',
+            include: [{
+              model: Message,
+              as: 'messages',
+              limit: 1,
+              order: [['createdAt', 'DESC']]
+            }]
+          }],
+          order: [[{model: Conversation, as: 'conversation'}, 'lastMessageAt', 'DESC']],
+          limit: parseInt(limit),
+          offset: parseInt(offset)
+        });
+        
+        // Get unread counts
+        const unreadCounts = await redisService.getUnreadCounts(userId);
+        
+        // Format response
+        const conversations = await Promise.all(participations.map(async (participation) => {
+          const conversation = participation.conversation;
+          if (!conversation) return null;
+          
+          // Get participant details
+          const participantIds = conversation.participantIds || [];
+          const participantDetails = await User.findAll({
+            where: { id: { [Op.in]: participantIds } },
+            attributes: ['id', 'name', 'avatar', 'isOnline', 'lastSeen']
+          });
+          
+          return {
+            id: conversation.id,
+            jobId: conversation.jobId,
+            jobTitle: conversation.jobTitle,
+            lastMessageAt: conversation.lastMessageAt,
+            participants: participantDetails,
+            unreadCount: unreadCounts[conversation.id] || participation.unreadCount || 0,
+            lastMessage: conversation.messages && conversation.messages.length > 0 ? conversation.messages[0] : null
+          };
+        }));
+        
+        // Filter out nulls from any conversations that might have been deleted
+        const validConversations = conversations.filter(c => c !== null);
+        
+        socket.emit('conversations', {
+          conversations: validConversations,
+          total: validConversations.length,
+          offset: parseInt(offset),
+          limit: parseInt(limit),
+          timestamp: Date.now()
+        });
+        
+      } catch (error) {
+        logger.error(`Error handling get_conversations: ${error}`);
+        socket.emit('error', { 
+          code: 'FETCH_FAILED', 
+          message: 'Failed to fetch conversations' 
+        });
+      }
+    });
  
     socket.on('fetch_conversation_messages', async ({ conversationId, limit = 50, offset = 0, before }) => {
       try {
@@ -711,6 +846,95 @@ module.exports = (io) => {
       }
     });
 
+    // Also support get_messages for React Native clients
+    socket.on('get_messages', async ({ conversationId, limit = 50, offset = 0, before }) => {
+      try {
+        // Verify user is a participant
+        const participation = await ConversationParticipant.findOne({
+          where: { conversationId, userId }
+        });
+        
+        if (!participation) {
+          socket.emit('error', { 
+            code: 'NOT_AUTHORIZED', 
+            message: 'Not a participant in this conversation' 
+          });
+          return;
+        }
+        
+        // Build the where clause
+        const where = { 
+          conversationId,
+          deleted: false
+        };
+        
+        // Add time condition if 'before' is specified
+        if (before) {
+          where.createdAt = { [Op.lt]: new Date(before) };
+        }
+        
+        // Get messages from database
+        const messages = await Message.findAll({
+          where,
+          order: [['createdAt', 'DESC']],
+          limit: parseInt(limit),
+          offset: parseInt(offset)
+        });
+        
+        // Get sender info
+        const senderIds = [...new Set(messages.map(m => m.senderId))];
+        const senders = await User.findAll({
+          where: { id: { [Op.in]: senderIds } },
+          attributes: ['id', 'name', 'avatar']
+        });
+        
+        const senderMap = senders.reduce((map, sender) => {
+          map[sender.id] = sender;
+          return map;
+        }, {});
+        
+        // Format messages for response (using format compatible with React Native clients)
+        const formattedMessages = messages.map(message => {
+          const sender = senderMap[message.senderId] || { id: message.senderId };
+          
+          return {
+            id: message.id,
+            conversationId: message.conversationId,
+            senderId: message.senderId,
+            sender: {
+              id: sender.id,
+              name: sender.name || 'Unknown',
+              avatar: sender.avatar
+            },
+            receiverId: message.receiverId,
+            type: message.type,
+            content: message.content,
+            status: message.status,
+            clientTempId: message.clientTempId,
+            createdAt: message.createdAt,
+            updatedAt: message.updatedAt
+          };
+        });
+        
+        // Reply to client with format compatible with React Native clients
+        socket.emit('messages', {
+          conversationId,
+          messages: formattedMessages,
+          offset: parseInt(offset),
+          limit: parseInt(limit),
+          hasMore: messages.length === parseInt(limit),
+          timestamp: Date.now()
+        });
+        
+      } catch (error) {
+        logger.error(`Error handling get_messages: ${error}`);
+        socket.emit('error', { 
+          code: 'FETCH_FAILED', 
+          message: 'Failed to fetch messages' 
+        });
+      }
+    });
+
    // Typing indicators
    socket.on('typing', async ({ conversationId }) => {
      try {
@@ -736,6 +960,59 @@ module.exports = (io) => {
        
      } catch (error) {
        logger.error(`Error handling typing: ${error}`);
+     }
+   });
+
+   // Also support typing_start for React Native clients
+   socket.on('typing_start', async ({ conversationId }) => {
+     try {
+       // Verify user is a participant
+       const participation = await ConversationParticipant.findOne({
+         where: { conversationId, userId }
+       });
+       
+       if (!participation) {
+         return; // Silently ignore
+       }
+       
+       // Set typing status in Redis
+       await redisService.setUserTyping(userId, conversationId);
+       
+       // Broadcast to conversation participants
+       socket.to(`conversation:${conversationId}`).emit('user_typing', {
+         userId,
+         conversationId,
+         userName: socket.user.name,
+         userName: socket.user.name,
+         timestamp: Date.now()
+       });
+       
+       // Also emit with typing_started for React Native clients
+       socket.to(`conversation:${conversationId}`).emit('typing_started', {
+         userId,
+         conversationId,
+         userName: socket.user.name,
+         timestamp: Date.now()
+       });
+       
+     } catch (error) {
+       logger.error(`Error handling typing_start: ${error}`);
+     }
+   });
+
+   // Support typing_stop for React Native clients
+   socket.on('typing_stop', async ({ conversationId }) => {
+     try {
+       // Broadcast to conversation participants
+       socket.to(`conversation:${conversationId}`).emit('typing_stopped', {
+         userId,
+         conversationId,
+         userName: socket.user.name,
+         timestamp: Date.now()
+       });
+       
+     } catch (error) {
+       logger.error(`Error handling typing_stop: ${error}`);
      }
    });
 
@@ -784,6 +1061,33 @@ module.exports = (io) => {
        
      } catch (error) {
        logger.error(`Error handling get_online_status: ${error}`);
+     }
+   });
+
+   // Check presence status - alternative format for React Native clients
+   socket.on('check_presence', async ({ userIds }) => {
+     try {
+       const presenceMap = await redisService.getUsersPresence(userIds);
+       
+       // Format response
+       const statuses = {};
+       Object.entries(presenceMap).forEach(([userId, presence]) => {
+         statuses[userId] = presence ? {
+           online: presence.isOnline,
+           lastSeen: presence.lastSeen
+         } : {
+           online: false,
+           lastSeen: null
+         };
+       });
+       
+       socket.emit('presence_status', {
+         statuses,
+         timestamp: Date.now()
+       });
+       
+     } catch (error) {
+       logger.error(`Error handling check_presence: ${error}`);
      }
    });
 
@@ -1144,6 +1448,36 @@ module.exports = (io) => {
      }
    });
 
+   // Ping/Pong for connection health check
+   socket.on('ping', (data = {}) => {
+     socket.emit('pong', {
+       userId,
+       socketId,
+       timestamp: Date.now(),
+       echo: data.echo
+     });
+   });
+
+   // Client health check - useful for React Native which sometimes has issues with WebSocket reconnection
+   socket.on('client_health_check', async (data = {}) => {
+     try {
+       // Update last seen time
+       await queueService.enqueuePresenceUpdate(userId, true, socketId);
+       
+       // Return connection info
+       socket.emit('health_check_response', {
+         status: 'connected',
+         userId,
+         socketId,
+         serverTime: new Date().toISOString(),
+         uptime: process.uptime(),
+         clientData: data
+       });
+     } catch (error) {
+       logger.error(`Error handling client_health_check: ${error}`);
+     }
+   });
+
    // Clean up on disconnect
    socket.on('disconnect', async () => {
      try {
@@ -1184,6 +1518,50 @@ module.exports = (io) => {
      logger.error(`Error broadcasting user status: ${error}`);
    }
  };
+
+ // Function to check for zombie connections (connections that are still open but inactive)
+ const checkZombieConnections = async () => {
+   try {
+     const now = Date.now();
+     const timeoutThreshold = 10 * 60 * 1000; // 10 minutes
+     
+     // Check each socket
+     for (const [socketId, userId] of socketUserMap.entries()) {
+       const socket = io.sockets.sockets.get(socketId);
+       
+       if (!socket) {
+         // Socket no longer exists, clean up maps
+         socketUserMap.delete(socketId);
+         if (userSocketMap.get(userId) === socketId) {
+           userSocketMap.delete(userId);
+         }
+         continue;
+       }
+       
+       // Check if the socket has any activity
+       const lastActivity = socket.handshake.issued || 0;
+       if (now - lastActivity > timeoutThreshold) {
+         // Socket is inactive, disconnect it
+         logger.info(`Disconnecting zombie socket ${socketId} for user ${userId}`);
+         socket.disconnect(true);
+         
+         // Clean up maps
+         socketUserMap.delete(socketId);
+         if (userSocketMap.get(userId) === socketId) {
+           userSocketMap.delete(userId);
+         }
+         
+         // Update user status
+         await queueService.enqueuePresenceUpdate(userId, false);
+       }
+     }
+   } catch (error) {
+     logger.error(`Error checking zombie connections: ${error}`);
+   }
+ };
+
+ // Run zombie connection check periodically
+ setInterval(checkZombieConnections, 15 * 60 * 1000); // Every 15 minutes
 
  return {
    userSocketMap,
