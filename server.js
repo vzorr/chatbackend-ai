@@ -10,11 +10,14 @@ const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const cluster = require('cluster');
 const os = require('os');
+const swaggerJsDoc = require('swagger-jsdoc');
+const swaggerUi = require('swagger-ui-express');
 require('dotenv').config();
 
 const sequelize = require('./db');
 const logger = require('./utils/logger');
 const redisService = require('./services/redis');
+const queueService = require('./services/queue');
 const socketHandlers = require('./socketHandlers');
 const apiRoutes = require('./routes');
 const errorHandler = require('./middleware/error-middleware');
@@ -24,6 +27,43 @@ const { createUploadMiddleware } = require('./services/file-upload');
 // Cluster mode for production (disable for development/debugging)
 const CLUSTER_MODE = process.env.NODE_ENV === 'production' && process.env.DISABLE_CLUSTER !== 'true';
 const WORKER_COUNT = process.env.WORKER_COUNT || os.cpus().length;
+
+// Swagger configuration
+const swaggerOptions = {
+  definition: {
+    openapi: '3.0.0',
+    info: {
+      title: 'VortexHive Chat API',
+      version: '1.0.0',
+      description: 'API documentation for VortexHive Chat Backend',
+      contact: {
+        name: 'VortexHive Support',
+        email: 'support@vortexhive.com'
+      }
+    },
+    servers: [
+      {
+        url: process.env.API_BASE_URL || `http://localhost:${process.env.PORT || 5000}`,
+        description: process.env.NODE_ENV === 'production' ? 'Production Server' : 'Development Server'
+      }
+    ],
+    components: {
+      securitySchemes: {
+        bearerAuth: {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'JWT'
+        }
+      }
+    },
+    security: [
+      {
+        bearerAuth: []
+      }
+    ]
+  },
+  apis: ['./routes/*.js']
+};
 
 // If primary process in cluster mode, fork workers
 if (CLUSTER_MODE && cluster.isPrimary) {
@@ -51,13 +91,33 @@ function startServer() {
   const server = http.createServer(app);
   const io = new Server(server, {
     cors: {
-      origin: process.env.CORS_ORIGIN || '*',
-      methods: ['GET', 'POST', 'PUT', 'DELETE'],
-      credentials: true
+      origin: function(origin, callback) {
+        // Allow requests with no origin (mobile apps, curl, etc)
+        if (!origin) return callback(null, true);
+        
+        const allowedOrigins = (process.env.CORS_ORIGIN || '*').split(',');
+        
+        if (allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+          callback(null, true);
+        } else {
+          callback(new Error('Not allowed by CORS'));
+        }
+      },
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+      credentials: true,
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
     },
     pingTimeout: 30000, // Faster disconnection detection
     pingInterval: 10000,
-    transports: ['websocket', 'polling']
+    transports: ['websocket', 'polling'],
+    allowEIO3: true, // Better compatibility with older clients
+    connectTimeout: 45000, // Longer timeout for mobile networks
+    reconnection: true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    randomizationFactor: 0.5,
+    path: process.env.SOCKET_PATH || '/socket.io'
   });
 
   // Assign request ID to each request for tracing
@@ -75,7 +135,6 @@ function startServer() {
   app.use(compression());
   
   // CORS
-//  (updating CORS configuration)
   app.use(cors({
     origin: function(origin, callback) {
       // Allow requests with no origin (mobile apps, curl, etc)
@@ -115,6 +174,10 @@ function startServer() {
   // Apply rate limiter to API routes
   app.use('/api', apiLimiter);
   
+  // Generate Swagger docs
+  const swaggerDocs = swaggerJsDoc(swaggerOptions);
+  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
+  
   // Health check endpoint
   app.get('/health', async (req, res) => {
     // Check database connection
@@ -135,34 +198,90 @@ function startServer() {
       logger.error(`Redis health check failed: ${error}`);
     }
     
-    const healthy = dbStatus === 'OK' && redisStatus === 'OK';
+    // Check Queue Service
+    let queueStatus = 'OK';
+    try {
+      await queueService.ping();
+    } catch (error) {
+      queueStatus = 'ERROR';
+      logger.error(`Queue service health check failed: ${error}`);
+    }
+    
+    const healthy = dbStatus === 'OK' && redisStatus === 'OK' && queueStatus === 'OK';
     
     res.status(healthy ? 200 : 503).json({
       status: healthy ? 'OK' : 'ERROR',
       timestamp: new Date().toISOString(),
       services: {
         database: dbStatus,
-        redis: redisStatus
+        redis: redisStatus,
+        queue: queueStatus
       },
       version: process.env.npm_package_version || '1.0.0',
-      nodeId: process.pid
+      nodeId: process.pid,
+      uptime: process.uptime()
     });
   });
   
-  // API routes
-  app.use('/api', apiRoutes);
+  // Client configuration endpoint
+  app.get('/api/config', (req, res) => {
+    res.json({
+      apiVersion: process.env.npm_package_version || '1.0.0',
+      socketConfig: {
+        url: process.env.SOCKET_URL || `${req.protocol}://${req.get('host')}`,
+        path: process.env.SOCKET_PATH || '/socket.io',
+        transports: ['websocket', 'polling'],
+        connectionTimeout: 45000
+      },
+      fileUploads: {
+        maxSize: parseInt(process.env.MAX_FILE_SIZE || '5242880'), // 5MB default
+        allowedTypes: [
+          'image/jpeg', 
+          'image/png', 
+          'image/gif', 
+          'image/webp', 
+          'audio/mpeg', 
+          'audio/wav',
+          'audio/ogg',
+          'application/pdf',
+          'application/msword',
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        ]
+      },
+      features: {
+        typing: true,
+        readReceipts: true,
+        deliveryReceipts: true,
+        groupChats: true,
+        mediaMessages: true,
+        offlineMessaging: true,
+        passthrough: true
+      }
+    });
+  });
+  
+  // API routes - both versioned and unversioned for backward compatibility
+  app.use('/api/v1', apiRoutes);
+  app.use('/api', apiRoutes); // Legacy support
   
   // File upload route with middleware
   const upload = createUploadMiddleware();
   app.post('/upload', upload.single('file'), (req, res) => {
     if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
+      return res.status(400).json({ 
+        success: false,
+        error: {
+          code: 'FILE_REQUIRED',
+          message: 'No file uploaded'
+        }
+      });
     }
     
     // Return file URL
     const fileUrl = req.file.location || `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
     
     res.json({ 
+      success: true,
       fileUrl,
       fileName: req.file.originalname,
       fileSize: req.file.size,
@@ -175,7 +294,8 @@ function startServer() {
     res.json({
       name: 'VortexHive Chat API',
       status: 'online',
-      version: process.env.npm_package_version || '1.0.0'
+      version: process.env.npm_package_version || '1.0.0',
+      docs: `${req.protocol}://${req.get('host')}/api-docs`
     });
   });
   
@@ -204,6 +324,7 @@ function startServer() {
       // Start HTTP server
       server.listen(PORT, '0.0.0.0', () => {
         logger.info(`Server running on http://0.0.0.0:${PORT} (PID: ${process.pid})`);
+        logger.info(`API Documentation available at http://0.0.0.0:${PORT}/api-docs`);
       });
       
       // Graceful shutdown
@@ -217,12 +338,18 @@ function startServer() {
   })();
   
   // Graceful shutdown function
+  // Graceful shutdown function
   async function gracefulShutdown() {
     logger.info('Received shutdown signal, closing connections...');
     
     // Close HTTP server (stop accepting new connections)
     server.close(() => {
       logger.info('HTTP server closed');
+    });
+    
+    // Close Socket.IO connections
+    io.close(() => {
+      logger.info('Socket.IO connections closed');
     });
     
     // Close database connection
@@ -239,6 +366,14 @@ function startServer() {
       logger.info('Redis connection closed');
     } catch (error) {
       logger.error(`Error closing Redis connection: ${error}`);
+    }
+    
+    // Close Queue Service
+    try {
+      await queueService.redisClient.quit();
+      logger.info('Queue service connection closed');
+    } catch (error) {
+      logger.error(`Error closing queue service connection: ${error}`);
     }
     
     // Exit with success code
