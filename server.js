@@ -1,128 +1,236 @@
-const express = require("express");
-const http = require("http");
-const { Server } = require("socket.io");
-const cors = require("cors");
-require("dotenv").config();
+// server.js
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
+const helmet = require('helmet');
+const compression = require('compression');
+const rateLimit = require('express-rate-limit');
+const { v4: uuidv4 } = require('uuid');
+const path = require('path');
+const cluster = require('cluster');
+const os = require('os');
+require('dotenv').config();
 
-const sequelize = require("./db");
-const { User, Message } = require("./db/models");
-const { generateBotReply } = require("./services/openai");
+const sequelize = require('./db');
+const logger = require('./utils/logger');
+const redisService = require('./services/redis');
+const socketHandlers = require('./socketHandlers');
+const apiRoutes = require('./routes');
+const errorHandler = require('./middleware/errorHandler');
+const requestLogger = require('./middleware/requestLogger');
+const { createUploadMiddleware } = require('./services/fileUpload');
 
-const path = require("path");
-const multer = require("multer");
+// Cluster mode for production (disable for development/debugging)
+const CLUSTER_MODE = process.env.NODE_ENV === 'production' && process.env.DISABLE_CLUSTER !== 'true';
+const WORKER_COUNT = process.env.WORKER_COUNT || os.cpus().length;
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, "uploads/"),
-  filename: (req, file, cb) => cb(null, `${Date.now()}_${file.originalname.replace(/ /g, "_")}`)
-});
+// If primary process in cluster mode, fork workers
+if (CLUSTER_MODE && cluster.isPrimary) {
+  logger.info(`Primary ${process.pid} is running`);
+  logger.info(`Starting ${WORKER_COUNT} workers...`);
 
-const upload = multer({
-  storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const allowed = ["image/jpeg", "image/png", "image/jpg"];
-    allowed.includes(file.mimetype)
-      ? cb(null, true)
-      : cb(new Error("Only images allowed"), false);
-  },
-});
-
-const { getBotUser, BOT_PHONE } = require("./services/botUser");
-
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
-});
-
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
-app.use(cors());
-app.use(express.json());
-
-app.post("/upload", upload.single("image"), (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "No file uploaded" });
-  const imageUrl = `${req.protocol}://${req.get("host")}/uploads/${req.file.filename}`;
-  res.json({ imageUrl });
-});
-
-app.get("/", (req, res) => {
-  res.send("✅ Chatbot server is running");
-});
-
-app.get("/users", async (req, res) => {
-  try {
-    const users = await User.findAll({
-      attributes: ["id", "name", "phone", "isOnline", "lastSeen"]
-    });
-    res.json(users);
-  } catch (err) {
-    console.error("❌ /users fetch failed:", err);
-    res.status(500).json({ error: "Failed to fetch users" });
-  }
-});
-
-app.get("/history", async (req, res) => {
-  const { userPhone, peerPhone } = req.query;
-
-  if (!userPhone || !peerPhone) {
-    return res.status(400).json({ error: "Missing userPhone or peerPhone" });
+  // Fork workers
+  for (let i = 0; i < WORKER_COUNT; i++) {
+    cluster.fork();
   }
 
-  try {
-    const user = await User.findOne({ where: { phone: userPhone } });
-    const peer = await User.findOne({ where: { phone: peerPhone } });
+  // Handle worker crashes
+  cluster.on('exit', (worker, code, signal) => {
+    logger.error(`Worker ${worker.process.pid} died with code ${code} and signal ${signal}`);
+    logger.info('Starting a new worker...');
+    cluster.fork();
+  });
+} else {
+  // Worker process or single-process mode
+  startServer();
+}
 
-    if (!user || !peer) {
-      return res.status(404).json({ error: "User or peer not found" });
+function startServer() {
+  const app = express();
+  const server = http.createServer(app);
+  const io = new Server(server, {
+    cors: {
+      origin: process.env.CORS_ORIGIN || '*',
+      methods: ['GET', 'POST', 'PUT', 'DELETE'],
+      credentials: true
+    },
+    pingTimeout: 30000, // Faster disconnection detection
+    pingInterval: 10000,
+    transports: ['websocket', 'polling']
+  });
+
+  // Assign request ID to each request for tracing
+  app.use((req, res, next) => {
+    req.id = uuidv4();
+    next();
+  });
+
+  // Basic security
+  app.use(helmet({
+    contentSecurityPolicy: process.env.NODE_ENV === 'production' ? undefined : false
+  }));
+  
+  // Compression
+  app.use(compression());
+  
+  // CORS
+  app.use(cors({
+    origin: process.env.CORS_ORIGIN || '*',
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+  }));
+  
+  // Body parsers
+  app.use(express.json({ limit: '5mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '5mb' }));
+  
+  // Rate limiting
+  const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 1000, // limit each IP to 1000 requests per windowMs
+    standardHeaders: true,
+    legacyHeaders: false
+  });
+  
+  // Static files
+  app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+  
+  // Request logging
+  app.use(requestLogger);
+  
+  // Apply rate limiter to API routes
+  app.use('/api', apiLimiter);
+  
+  // Health check endpoint
+  app.get('/health', async (req, res) => {
+    // Check database connection
+    let dbStatus = 'OK';
+    try {
+      await sequelize.authenticate();
+    } catch (error) {
+      dbStatus = 'ERROR';
+      logger.error(`Database health check failed: ${error}`);
     }
-
-    const history = await Message.findAll({
-      where: {
-        senderId: [user.id, peer.id],
-        receiverId: [user.id, peer.id]
+    
+    // Check Redis connection
+    let redisStatus = 'OK';
+    try {
+      await redisService.ping();
+    } catch (error) {
+      redisStatus = 'ERROR';
+      logger.error(`Redis health check failed: ${error}`);
+    }
+    
+    const healthy = dbStatus === 'OK' && redisStatus === 'OK';
+    
+    res.status(healthy ? 200 : 503).json({
+      status: healthy ? 'OK' : 'ERROR',
+      timestamp: new Date().toISOString(),
+      services: {
+        database: dbStatus,
+        redis: redisStatus
       },
-      order: [["createdAt", "ASC"]]
+      version: process.env.npm_package_version || '1.0.0',
+      nodeId: process.pid
     });
-
-    res.json(history);
-  } catch (err) {
-    console.error("❌ /history fetch failed:", err);
-    res.status(500).json({ error: "Internal server error" });
-  }
-});
-
-const broadcastUserList = async () => {
-  try {
-    const users = await User.findAll({
-      attributes: ["id", "name", "phone", "isOnline", "lastSeen"]
+  });
+  
+  // API routes
+  app.use('/api', apiRoutes);
+  
+  // File upload route with middleware
+  const upload = createUploadMiddleware();
+  app.post('/upload', upload.single('file'), (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+    
+    // Return file URL
+    const fileUrl = req.file.location || `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+    
+    res.json({ 
+      fileUrl,
+      fileName: req.file.originalname,
+      fileSize: req.file.size,
+      fileType: req.file.mimetype
     });
-    io.emit("user_list_update", users);
-  } catch (err) {
-    console.error("❌ broadcastUserList failed:", err);
-  }
-};
-
-const broadcastUserStatusChange = async (userId, isOnline, lastSeen = null) => {
-  try {
-    io.emit("user_status_change", { userId, isOnline, lastSeen });
-  } catch (err) {
-    console.error("❌ broadcastUserStatusChange failed:", err);
-  }
-};
-
-require("./socketHandlers")(io);
-
-(async () => {
-  try {
-    await sequelize.sync({ alter: true });
-    const PORT = process.env.SERVER_PORT || 3001;
-    server.listen(PORT, "0.0.0.0", () => {
-      console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
+  });
+  
+  // Root route
+  app.get('/', (req, res) => {
+    res.json({
+      name: 'VortexHive Chat API',
+      status: 'online',
+      version: process.env.npm_package_version || '1.0.0'
     });
-  } catch (err) {
-    console.error("❌ Server initialization failed:", err);
+  });
+  
+  // Error handler (must be last)
+  app.use(errorHandler);
+  
+  // Initialize socket handlers
+  socketHandlers(io);
+  
+  // Start the server
+  const PORT = process.env.PORT || 5000;
+  
+  // Initialize database and start server
+  (async () => {
+    try {
+      // Connect to database
+      await sequelize.authenticate();
+      logger.info('Database connection established');
+      
+      // Sync models (disable in production)
+      if (process.env.NODE_ENV !== 'production') {
+        await sequelize.sync({ alter: process.env.DB_ALTER === 'true' });
+        logger.info('Database models synchronized');
+      }
+      
+      // Start HTTP server
+      server.listen(PORT, '0.0.0.0', () => {
+        logger.info(`Server running on http://0.0.0.0:${PORT} (PID: ${process.pid})`);
+      });
+      
+      // Graceful shutdown
+      process.on('SIGTERM', gracefulShutdown);
+      process.on('SIGINT', gracefulShutdown);
+      
+    } catch (error) {
+      logger.error(`Failed to start server: ${error}`);
+      process.exit(1);
+    }
+  })();
+  
+  // Graceful shutdown function
+  async function gracefulShutdown() {
+    logger.info('Received shutdown signal, closing connections...');
+    
+    // Close HTTP server (stop accepting new connections)
+    server.close(() => {
+      logger.info('HTTP server closed');
+    });
+    
+    // Close database connection
+    try {
+      await sequelize.close();
+      logger.info('Database connection closed');
+    } catch (error) {
+      logger.error(`Error closing database connection: ${error}`);
+    }
+    
+    // Close Redis client
+    try {
+      await redisService.redisClient.quit();
+      logger.info('Redis connection closed');
+    } catch (error) {
+      logger.error(`Error closing Redis connection: ${error}`);
+    }
+    
+    // Exit with success code
+    logger.info('Shutdown complete, exiting');
+    process.exit(0);
   }
-})();
+}
