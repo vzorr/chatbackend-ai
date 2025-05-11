@@ -8,7 +8,7 @@ const { validatePhone, validateUUID } = require('../utils/validation');
 const logger = require('../utils/logger');
 const redisService = require('../services/redis');
 const queueService = require('../services/queue');
-const authenticate = require('../middleware/auth-middleware');
+const authenticate = require('../middleware/authenticate');
 
 const passport = require('passport');
 const GoogleStrategy = require('passport-google-oauth20').Strategy;

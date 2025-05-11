@@ -318,35 +318,30 @@ module.exports = {
     });
 
     // Add indexes
-    await queryInterface.addIndex('users', ['phone'], {
-      name: 'idx_users_phone'
-    });
-
-    await queryInterface.addIndex('conversation_participants', ['conversationId', 'userId'], {
-      unique: true,
-      name: 'idx_conversation_participants_unique'
-    });
-
-    await queryInterface.addIndex('conversations', ['lastMessageAt'], {
-      name: 'idx_conversations_last_message_at'
-    });
-    
-    await queryInterface.addIndex('messages', ['conversationId', 'createdAt'], {
-      name: 'idx_messages_conversation_created'
-    });
-
-    await queryInterface.addIndex('messages', ['senderId', 'receiverId', 'createdAt'], {
-      name: 'idx_messages_sender_receiver_created'
-    });
-
-    await queryInterface.addIndex('device_tokens', ['token'], {
-      unique: true,
-      name: 'idx_device_tokens_token'
-    });
-
-    await queryInterface.addIndex('device_tokens', ['userId'], {
-      name: 'idx_device_tokens_user_id'
-    });
+    await queryInterface.sequelize.query(`-- Idempotent Index Creation
+    DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_users_phone') THEN
+        CREATE UNIQUE INDEX idx_users_phone ON "users"("phone");
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_conversation_participants_unique') THEN
+        CREATE UNIQUE INDEX idx_conversation_participants_unique ON "conversation_participants"("conversationId", "userId");
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_conversations_last_message_at') THEN
+        CREATE INDEX idx_conversations_last_message_at ON "conversations"("lastMessageAt");
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_messages_conversation_created') THEN
+        CREATE INDEX idx_messages_conversation_created ON "messages"("conversationId", "createdAt");
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_messages_sender_receiver_created') THEN
+        CREATE INDEX idx_messages_sender_receiver_created ON "messages"("senderId", "receiverId", "createdAt");
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_device_tokens_token') THEN
+        CREATE UNIQUE INDEX idx_device_tokens_token ON "device_tokens"("token");
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_device_tokens_user_id') THEN
+        CREATE INDEX idx_device_tokens_user_id ON "device_tokens"("userId");
+      END IF;
+    END $$;`);
     
     // Create a trigger function to update updatedAt timestamp
     await queryInterface.sequelize.query(`

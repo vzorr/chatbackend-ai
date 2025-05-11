@@ -1,5 +1,6 @@
 // services/queue.js
 const { v4: uuidv4 } = require('uuid');
+const { Op } = require('sequelize');
 const Redis = require('ioredis');
 const logger = require('../utils/logger');
 const { User, Message, Conversation, ConversationParticipant } = require('../db/models');
@@ -360,7 +361,7 @@ const processReadReceiptsQueue = async () => {
           where: {
             conversationId,
             receiverId: userId,
-            status: { [Op: ne]: 'read' }
+            status: { [Op.ne]: 'read' }
           }
         }
       );
