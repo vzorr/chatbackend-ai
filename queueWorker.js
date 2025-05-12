@@ -11,12 +11,7 @@ const express = require('express');
 const { createBullBoard } = require('bull-board');
 const { BullAdapter } = require('bull-board/bullAdapter');
 const { ExpressAdapter } = require('bull-board');
-// Replace these imports:
-const { createBullBoard } = require('bull-board');
-const { BullAdapter } = require('bull-board/bullAdapter');
-const { ExpressAdapter } = require('bull-board');
 
-// With:
 const { createBullBoard } = require('@bull-board/api');
 const { BullAdapter } = require('@bull-board/api/bullAdapter');
 const { ExpressAdapter } = require('@bull-board/express');
