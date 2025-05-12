@@ -367,6 +367,17 @@ class NotificationManager {
 
     return expiredTokens.length;
   }
+
+  
+// Add to notificationManager.js:
+ async shutdown(){
+  if (this.providers.has('APN')) {
+    await apnService.shutdown();
+  }
 }
+  // Any other cleanup
+}
+
+
 
 module.exports = new NotificationManager();

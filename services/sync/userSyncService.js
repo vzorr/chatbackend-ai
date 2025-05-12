@@ -3,6 +3,8 @@ const { User, TokenHistory } = require('../../db/models');
 const logger = require('../../utils/logger');
 const { validateUUID } = require('../../utils/validation');
 const { v4: uuidv4 } = require('uuid');
+// Add this import at the top of userSyncService.js:
+const { User, TokenHistory, DeviceToken } = require('../../db/models');
 
 class UserSyncService {
   constructor() {

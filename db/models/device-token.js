@@ -13,15 +13,24 @@ module.exports = (sequelize, DataTypes) => {
     },
     token: {
       type: DataTypes.STRING,
-      allowNull: false
+      allowNull: false,
+      unique: true
     },
     deviceType: {
-      type: DataTypes.ENUM("mobile", "web"),
-      defaultValue: "mobile"
+      type: DataTypes.ENUM('mobile', 'web'),
+      defaultValue: 'mobile'
     },
     platform: {
       type: DataTypes.STRING,
       allowNull: true
+    },
+    deviceId: {
+      type: DataTypes.STRING,
+      allowNull: true
+    },
+    active: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: true
     },
     lastUsed: {
       type: DataTypes.DATE,
@@ -37,6 +46,9 @@ module.exports = (sequelize, DataTypes) => {
       },
       {
         fields: ['userId']
+      },
+      {
+        fields: ['deviceId']
       }
     ]
   });

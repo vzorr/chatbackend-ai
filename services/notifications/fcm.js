@@ -13,18 +13,28 @@ class FcmNotificationService {
       if (this.initialized) {
         return true;
       }
-
+  
       const credentials = process.env.FIREBASE_CREDENTIALS;
       if (!credentials) {
         logger.warn('Firebase credentials not configured');
         return false;
       }
-
-      const serviceAccount = JSON.parse(credentials);
+  
+      // Ensure proper JSON parsing
+      let serviceAccount;
+      try {
+        serviceAccount = typeof credentials === 'string' 
+          ? JSON.parse(credentials) 
+          : credentials;
+      } catch (parseError) {
+        logger.error('Failed to parse Firebase credentials', { error: parseError.message });
+        return false;
+      }
+  
       this.firebaseApp = admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
       });
-
+  
       this.initialized = true;
       logger.info('FCM notification service initialized successfully');
       return true;

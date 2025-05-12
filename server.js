@@ -787,8 +787,7 @@ async function gracefulShutdown(server, io) {
 
     // Shutdown notification services
     logger.info('🔔 Shutting down notification services...');
-    const apnService = require('./services/notifications/apn');
-    await apnService.shutdown();
+    await notificationManager.shutdown();
     logger.info('✅ APN service shut down');
 
     clearTimeout(shutdownTimeout);
