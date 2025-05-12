@@ -3,8 +3,107 @@ const express = require('express');
 const router = express.Router();
 const { Op } = require('sequelize');
 const { User, ConversationParticipant, Conversation } = require('../db/models');
-const authenticate = require('../middleware/authenticate');
+const authenticate = require('../middleware/authentication');
 const redisService = require('../services/redis');
+const logger = require('../utils/logger');
+const jwt = require('jsonwebtoken');
+const { v4: uuidv4 } = require('uuid');
+
+// Register new user
+router.post('/register', async (req, res, next) => {
+  try {
+    const { email, name, password, phone } = req.body;
+
+    if (!email || !password || !phone) {
+      logger.warn('Missing required fields in registration request');
+      return res.status(400).json({ error: 'Email, phone, and password are required' });
+    }
+
+    const existingUser = await User.findOne({ where: { email } });
+    if (existingUser) {
+      logger.warn(`Registration attempt with existing email: ${email}`);
+      return res.status(409).json({ error: 'Email already in use' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    const newUser = await User.create({
+      id: uuidv4(),
+      email,
+      name,
+      phone,
+      password: hashedPassword,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+
+    logger.info(`New user registered: ${email}`);
+
+    res.status(201).json({
+      message: 'User registered successfully',
+      user: {
+        id: newUser.id,
+        email: newUser.email,
+        name: newUser.name
+      }
+    });
+  } catch (error) {
+    logger.error('Error in /users/register route', { error });
+    next(error);
+  }
+});
+
+// Sync user from main app using JWT
+router.post('/sync', async (req, res, next) => {
+  try {
+    const { token } = req.body;
+
+    if (!token) {
+      return res.status(400).json({ error: 'Token is required' });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const externalId = decoded.id || decoded.userId;
+    const name = decoded.name || decoded.fullname;
+    const email = decoded.email;
+    const phone = decoded.phone || decoded.phonenumber || decoded.mobile;
+    const app = decoded.app || decoded.application;
+
+    if (!externalId) {
+      return res.status(400).json({ error: 'Invalid token: missing user ID' });
+    }
+
+    let user = await User.findOne({ where: { externalId } });
+
+    if (!user) {
+      user = await User.create({
+        id: externalId,
+        externalId,
+        email: email || null,
+        name:  name || null,
+        phone:  phone || null,
+        //role: decoded.role || 'client',
+        isOnline: false
+      });
+      logger.info(`User synced from main app and created: ${externalId}`);
+    } else {
+      logger.info(`User already exists: ${externalId}`);
+    }
+
+    res.status(200).json({
+      message: 'User sync successful',
+      user: {
+        id: user.id,
+        externalId: user.externalId,
+        email: user.email,
+        name: user.name
+      }
+    });
+  } catch (error) {
+    logger.error('Error syncing user from main app', { error });
+    next(error);
+  }
+});
 
 // Get user list
 router.get('/', authenticate, async (req, res, next) => {

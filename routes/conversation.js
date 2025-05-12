@@ -9,9 +9,9 @@ const {
   Message, 
   User 
 } = require('../db/models');
-const authenticate = require('../middleware/authenticate');
+const authenticate = require('../middleware/authentication');
 const redisService = require('../services/redis');
-const queueService = require('../services/queue');
+const queueService = require('../services/queue/queueService');
 
 // Get all conversations for current user
 router.get('/', authenticate, async (req, res, next) => {

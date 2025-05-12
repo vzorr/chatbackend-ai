@@ -2,8 +2,8 @@
 const { v4: uuidv4 } = require('uuid');
 const { Op } = require('sequelize');
 const Redis = require('ioredis');
-const logger = require('../utils/logger');
-const { User, Message, Conversation, ConversationParticipant } = require('../db/models');
+const logger = require('../../utils/logger');
+const { User, Message, Conversation, ConversationParticipant } = require('../../db/models');
 
 // Create Redis client for queue operations
 const redisClient = new Redis({
