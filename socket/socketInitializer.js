@@ -3,10 +3,10 @@ const { createAdapter } = require('@socket.io/redis-adapter');
 const Redis = require('ioredis');
 const logger = require('../utils/logger');
 const socketAuthMiddleware = require('./middlewares/socketAuthMiddleware');
-const connectionHandler = require('./handlers/connectionHandler');
+const connectionHandler = require('./handlers/connectionHandlers');
 const messageHandlers = require('./handlers/messageHandlers');
-const conversationHandler = require('./handlers/conversationHandler');
-const presenceHandler = require('./handlers/presenceHandler');
+const conversationHandler = require('./handlers/conversationHandlers');
+const presenceHandler = require('./handlers/presenceHandlers');
 
 module.exports = async (io) => {
   logger.info('🔧 Initializing Socket.IO configuration...');
