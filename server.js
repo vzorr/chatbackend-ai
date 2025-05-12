@@ -24,6 +24,7 @@ const authMiddleware = require('./middleware/authentication');
 const requestLogger = require('./middleware/request-logger');
 const { createUploadMiddleware } = require('./services/file-upload');
 const promClient = require('prom-client');
+
 // Import routes
 const apiRoutes = require('./routes');
 const authRoutes = require('./routes/auth');
@@ -32,10 +33,42 @@ const conversationRoutes = require('./routes/conversation');
 const messageRoutes = require('./routes/message');
 const adminRoutes = require('./routes/admin');
 
-// Import socket handlers
-//const socketHandlers = require('./socketHandlers');
+// Import socket initializer
 const socketInitializer = require('./socket/socketInitializer');
-socketInitializer(io);
+
+// Log initial startup
+logger.info('🚀 Chat Server Starting...', {
+  nodeVersion: process.version,
+  platform: process.platform,
+  pid: process.pid,
+  env: process.env.NODE_ENV || 'development'
+});
+
+// Log configuration
+logger.info('📋 Server Configuration', {
+  server: {
+    port: config.server.port,
+    host: config.server.host,
+    corsOrigin: config.server.corsOrigin,
+    socketPath: config.server.socketPath
+  },
+  database: {
+    host: config.database.host,
+    port: config.database.port,
+    name: config.database.name,
+    dialect: config.database.dialect
+  },
+  redis: {
+    host: config.redis.host,
+    port: config.redis.port,
+    hasPassword: !!config.redis.password
+  },
+  features: config.features,
+  cluster: {
+    enabled: config.cluster.enabled,
+    workerCount: config.cluster.workerCount
+  }
+});
 
 // Swagger configuration
 const swaggerOptions = {
@@ -68,22 +101,28 @@ const swaggerOptions = {
 
 // Cluster mode for production
 if (config.cluster.enabled && cluster.isPrimary) {
-  logger.info(`Primary ${process.pid} is running`);
-  logger.info(`Starting ${config.cluster.workerCount} workers...`);
+  logger.info(`🔧 Primary ${process.pid} is running in cluster mode`);
+  logger.info(`📊 Starting ${config.cluster.workerCount} workers...`);
 
   // Fork workers
   for (let i = 0; i < config.cluster.workerCount; i++) {
-    cluster.fork();
+    const worker = cluster.fork();
+    logger.info(`👷 Worker ${i + 1} started`, { pid: worker.process.pid });
   }
 
   // Handle worker crashes
   cluster.on('exit', (worker, code, signal) => {
-    logger.error(`Worker ${worker.process.pid} died`, { code, signal });
+    logger.error(`❌ Worker ${worker.process.pid} died`, { 
+      code, 
+      signal,
+      workerId: worker.id 
+    });
     
     // Restart worker after a delay
     setTimeout(() => {
-      logger.info('Starting a new worker...');
-      cluster.fork();
+      logger.info('♻️  Starting replacement worker...');
+      const newWorker = cluster.fork();
+      logger.info(`✅ Replacement worker started`, { pid: newWorker.process.pid });
     }, 1000);
   });
 
@@ -92,23 +131,35 @@ if (config.cluster.enabled && cluster.isPrimary) {
     const workers = Object.values(cluster.workers);
     const aliveWorkers = workers.filter(w => w.state === 'online').length;
     
-    logger.info('Cluster health check', {
+    logger.info('📊 Cluster health check', {
       totalWorkers: workers.length,
       aliveWorkers,
-      deadWorkers: workers.length - aliveWorkers
+      deadWorkers: workers.length - aliveWorkers,
+      workerDetails: workers.map(w => ({
+        id: w.id,
+        pid: w.process.pid,
+        state: w.state
+      }))
     });
   }, config.monitoring.healthCheckInterval);
 
 } else {
   // Worker process or single-process mode
+  const workerId = cluster.worker?.id || 'single-process';
+  logger.info(`🏃 Starting server (${workerId})...`);
   startServer();
 }
 
 async function startServer() {
+  const startTime = Date.now();
+  logger.info('🔧 Initializing server components...');
+
   const app = express();
   const server = http.createServer(app);
   
-  // Initialize Socket.IO
+  logger.info('✅ Express app created');
+
+  // Initialize Socket.IO server
   const io = new Server(server, {
     cors: {
       origin: config.server.corsOrigin,
@@ -117,33 +168,52 @@ async function startServer() {
     },
     pingTimeout: 30000,
     pingInterval: 10000,
-    path: config.server.socketPath
+    path: config.server.socketPath,
+    transports: ['websocket', 'polling'],
+    allowEIO3: true
   });
 
+  logger.info('✅ Socket.IO server instance created', {
+    cors: config.server.corsOrigin,
+    path: config.server.socketPath,
+    transports: ['websocket', 'polling']
+  });
+
+  // Pass io to socket initializer - let it handle all socket logic
+  await socketInitializer(io);
+  logger.info('✅ Socket.IO fully initialized with handlers');
+
   // Initialize services
+  logger.info('🔧 Initializing services...');
   await initializeServices();
 
   // Trust proxy if configured
   if (config.security.trustProxy) {
     app.set('trust proxy', true);
+    logger.info('✅ Trust proxy enabled');
   }
 
-  // Request ID middleware
+  // Correlation ID Middleware
   app.use((req, res, next) => {
     req.id = uuidv4();
+    req.correlationId = req.id;
+    res.setHeader('X-Correlation-ID', req.correlationId);
     logger.setContext({ requestId: req.id });
     next();
   });
+  logger.info('✅ Correlation ID middleware added');
 
   // Security middleware
   if (config.security.enableHelmet) {
     app.use(helmet({
       contentSecurityPolicy: config.server.nodeEnv === 'production'
     }));
+    logger.info('✅ Helmet security middleware enabled');
   }
 
   // Compression middleware
   app.use(compression());
+  logger.info('✅ Compression middleware enabled');
 
   // CORS middleware
   app.use(cors({
@@ -151,13 +221,16 @@ async function startServer() {
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
   }));
+  logger.info('✅ CORS middleware configured', { origin: config.server.corsOrigin });
 
   // Body parsers
   app.use(express.json({ limit: '5mb' }));
   app.use(express.urlencoded({ extended: true, limit: '5mb' }));
+  logger.info('✅ Body parsers configured', { limit: '5mb' });
 
   // Request logging
   app.use(requestLogger);
+  logger.info('✅ Request logging middleware enabled');
 
   // Rate limiting
   const apiLimiter = rateLimit({
@@ -166,7 +239,11 @@ async function startServer() {
     standardHeaders: true,
     legacyHeaders: false,
     handler: (req, res) => {
-      logger.warn('Rate limit exceeded', { ip: req.ip, path: req.path });
+      logger.warn('⚠️ Rate limit exceeded', { 
+        ip: req.ip, 
+        path: req.path,
+        correlationId: req.correlationId
+      });
       
       res.status(429).json({
         success: false,
@@ -180,36 +257,54 @@ async function startServer() {
   });
 
   app.use('/api', apiLimiter);
+  logger.info('✅ Rate limiting configured', {
+    windowMs: config.rateLimiting.windowMs,
+    max: config.rateLimiting.max
+  });
 
   // Static files
-  app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+  const uploadsPath = path.join(__dirname, 'uploads');
+  app.use('/uploads', express.static(uploadsPath));
+  logger.info('✅ Static file serving configured', { path: '/uploads' });
 
   // Health check endpoint
   app.get('/health', async (req, res) => {
+    const startTime = Date.now();
     const health = await getHealthStatus();
+    const duration = Date.now() - startTime;
+    
+    logger.info('🏥 Health check performed', {
+      status: health.status,
+      duration: `${duration}ms`,
+      services: health.services
+    });
+    
     res.status(health.status === 'healthy' ? 200 : 503).json(health);
   });
+  logger.info('✅ Health check endpoint configured', { path: '/health' });
 
   // Metrics endpoint (if enabled)
   if (config.monitoring.metrics.enabled) {
-    const prometheus = require('prom-client');
-    prometheus.collectDefaultMetrics();
+    promClient.collectDefaultMetrics();
     
     app.get('/metrics', async (req, res) => {
-      res.set('Content-Type', prometheus.register.contentType);
-      res.end(await prometheus.register.metrics());
+      res.set('Content-Type', promClient.register.contentType);
+      res.end(await promClient.register.metrics());
     });
+    logger.info('✅ Prometheus metrics endpoint configured', { path: '/metrics' });
   }
 
-  // Client SDK configuration endpoint (from existing)
+  // Client SDK configuration endpoint
   app.get('/api/config', (req, res) => {
     const { generateClientConfig } = require('./utils/client-sdk');
     res.json(generateClientConfig(req));
   });
+  logger.info('✅ Client SDK config endpoint configured', { path: '/api/config' });
 
   // Swagger documentation
   const swaggerDocs = swaggerJsDoc(swaggerOptions);
   app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
+  logger.info('✅ Swagger documentation configured', { path: '/api-docs' });
 
   // API Routes - Versioned
   app.use('/api/v1/auth', authRoutes);
@@ -217,9 +312,13 @@ async function startServer() {
   app.use('/api/v1/conversations', conversationRoutes);
   app.use('/api/v1/messages', messageRoutes);
   app.use('/api/v1/admin', adminRoutes);
+  logger.info('✅ Versioned API routes configured', { 
+    routes: ['/api/v1/auth', '/api/v1/users', '/api/v1/conversations', '/api/v1/messages', '/api/v1/admin']
+  });
 
-  // API Routes - Legacy support (from existing)
+  // API Routes - Legacy support
   app.use('/api', apiRoutes);
+  logger.info('✅ Legacy API routes configured', { path: '/api' });
 
   // File upload endpoint
   const upload = createUploadMiddleware();
@@ -228,6 +327,9 @@ async function startServer() {
     upload.single('file'), 
     (req, res) => {
       if (!req.file) {
+        logger.warn('⚠️ File upload attempted without file', { 
+          correlationId: req.correlationId 
+        });
         return res.status(400).json({
           success: false,
           error: {
@@ -240,6 +342,13 @@ async function startServer() {
       const fileUrl = req.file.location || 
         `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
 
+      logger.info('✅ File uploaded successfully', {
+        correlationId: req.correlationId,
+        fileName: req.file.originalname,
+        fileSize: req.file.size,
+        fileType: req.file.mimetype
+      });
+
       res.json({
         success: true,
         fileUrl,
@@ -249,6 +358,7 @@ async function startServer() {
       });
     }
   );
+  logger.info('✅ File upload endpoint configured', { path: '/upload' });
 
   // Root route
   app.get('/', (req, res) => {
@@ -261,68 +371,136 @@ async function startServer() {
       docs: `${req.protocol}://${req.get('host')}/api-docs`
     });
   });
+  logger.info('✅ Root route configured', { path: '/' });
 
   // 404 handler
   app.use(exceptionHandler.notFoundHandler);
+  logger.info('✅ 404 handler configured');
 
   // Error handler
   app.use(exceptionHandler.errorHandler);
+  logger.info('✅ Error handler configured');
 
   // Initialize exception handlers
   exceptionHandler.initialize(server);
-
-  // Initialize socket handlers
-  socketHandlers(io);
+  logger.info('✅ Exception handlers initialized');
 
   // Start server
   const PORT = config.server.port;
   const HOST = config.server.host;
 
   try {
+    logger.info('🔌 Connecting to database...');
     // Connect to database
     await sequelize.authenticate();
-    logger.info('Database connection established');
+    logger.info('✅ Database connection established', {
+      host: config.database.host,
+      database: config.database.name,
+      dialect: config.database.dialect
+    });
 
     // Sync models in development
     if (config.server.nodeEnv !== 'production' && process.env.DB_ALTER === 'true') {
+      logger.info('🔄 Synchronizing database models...');
       await sequelize.sync({ alter: true });
-      logger.info('Database models synchronized');
+      logger.info('✅ Database models synchronized');
     }
 
     // Start HTTP server
-    server.listen(PORT, HOST, () => {
-      logger.info(`Server running on http://${HOST}:${PORT}`, {
-        pid: process.pid,
-        environment: config.server.nodeEnv,
-        workerId: cluster.worker?.id
+    await new Promise((resolve) => {
+      server.listen(PORT, HOST, () => {
+        const setupDuration = Date.now() - startTime;
+        logger.info(`🚀 Server is running!`, {
+          url: `http://${HOST}:${PORT}`,
+          environment: config.server.nodeEnv,
+          pid: process.pid,
+          workerId: cluster.worker?.id,
+          setupDuration: `${setupDuration}ms`
+        });
+        logger.info(`📚 API Documentation available at: http://${HOST}:${PORT}/api-docs`);
+        logger.info(`🏥 Health check available at: http://${HOST}:${PORT}/health`);
+        
+        // Log enabled features
+        const enabledFeatures = Object.entries(config.features)
+          .filter(([_, enabled]) => enabled)
+          .map(([feature]) => feature);
+        
+        logger.info('🎯 Enabled features', { features: enabledFeatures });
+        
+        resolve();
       });
-      logger.info(`API Documentation: http://${HOST}:${PORT}/api-docs`);
     });
 
-    // Graceful shutdown
-    process.on('SIGTERM', () => gracefulShutdown(server, io));
-    process.on('SIGINT', () => gracefulShutdown(server, io));
+    // Log successful startup summary
+    logger.info('✅ Server startup completed successfully', {
+      services: {
+        database: '✓',
+        redis: '✓',
+        socketIO: '✓',
+        notifications: notificationManager.initialized ? '✓' : '✗'
+      }
+    });
+
+    // Graceful shutdown handlers
+    process.on('SIGTERM', () => {
+      logger.warn('⚠️ SIGTERM received, initiating graceful shutdown...');
+      gracefulShutdown(server, io);
+    });
+    
+    process.on('SIGINT', () => {
+      logger.warn('⚠️ SIGINT received, initiating graceful shutdown...');
+      gracefulShutdown(server, io);
+    });
 
   } catch (error) {
-    logger.error('Failed to start server', { error: error.message });
+    logger.error('❌ Failed to start server', { 
+      error: error.message,
+      stack: error.stack,
+      code: error.code
+    });
     process.exit(1);
   }
 }
 
 async function initializeServices() {
+  const startTime = Date.now();
+  
   try {
     // Initialize queue service
-    await queueService.initialize?.();
+    logger.info('🔧 Initializing queue service...');
+    if (queueService.initialize) {
+      await queueService.initialize();
+      logger.info('✅ Queue service initialized');
+    } else {
+      logger.warn('⚠️ Queue service initialize method not found');
+    }
     
     // Initialize notification manager
+    logger.info('🔧 Initializing notification manager...');
     await notificationManager.initialize();
+    logger.info('✅ Notification manager initialized', {
+      providers: notificationManager.providers ? 
+        Array.from(notificationManager.providers.keys()) : []
+    });
     
     // Initialize Redis service
-    await redisService.initialize?.();
+    logger.info('🔧 Initializing Redis service...');
+    if (redisService.initialize) {
+      await redisService.initialize();
+      logger.info('✅ Redis service initialized');
+    } else {
+      logger.warn('⚠️ Redis service initialize method not found');
+    }
     
-    logger.info('All services initialized successfully');
+    const duration = Date.now() - startTime;
+    logger.info('✅ All services initialized successfully', { 
+      duration: `${duration}ms` 
+    });
   } catch (error) {
-    logger.error('Service initialization failed', { error: error.message });
+    logger.error('❌ Service initialization failed', { 
+      error: error.message,
+      stack: error.stack
+    });
     throw error;
   }
 }
@@ -340,180 +518,172 @@ async function getHealthStatus() {
 
   // Check database
   try {
+    const startTime = Date.now();
     await sequelize.authenticate();
-    status.services.database = 'healthy';
+    const duration = Date.now() - startTime;
+    status.services.database = {
+      status: 'healthy',
+      responseTime: `${duration}ms`
+    };
+    logger.debug('✅ Database health check passed', { duration: `${duration}ms` });
   } catch (error) {
-    status.services.database = 'unhealthy';
+    status.services.database = {
+      status: 'unhealthy',
+      error: error.message
+    };
     status.status = 'unhealthy';
+    logger.error('❌ Database health check failed', { error: error.message });
   }
 
   // Check Redis
   try {
+    const startTime = Date.now();
     await redisService.ping();
-    status.services.redis = 'healthy';
+    const duration = Date.now() - startTime;
+    status.services.redis = {
+      status: 'healthy',
+      responseTime: `${duration}ms`
+    };
+    logger.debug('✅ Redis health check passed', { duration: `${duration}ms` });
   } catch (error) {
-    status.services.redis = 'unhealthy';
+    status.services.redis = {
+      status: 'unhealthy',
+      error: error.message
+    };
     status.status = 'unhealthy';
+    logger.error('❌ Redis health check failed', { error: error.message });
   }
 
   // Check Queue service
   try {
-    await queueService.ping();
-    status.services.queue = 'healthy';
+    const startTime = Date.now();
+    const queueStatus = await queueService.ping();
+    const duration = Date.now() - startTime;
+    status.services.queue = {
+      status: queueStatus.status === 'ok' ? 'healthy' : 'unhealthy',
+      responseTime: `${duration}ms`
+    };
+    logger.debug('✅ Queue health check passed', { duration: `${duration}ms` });
   } catch (error) {
-    status.services.queue = 'unhealthy';
+    status.services.queue = {
+      status: 'unhealthy',
+      error: error.message
+    };
     status.status = 'warning';
+    logger.error('❌ Queue health check failed', { error: error.message });
   }
 
   // Check notification services
-  status.services.notifications = notificationManager.initialized ? 'healthy' : 'unhealthy';
+  status.services.notifications = {
+    status: notificationManager.initialized ? 'healthy' : 'unhealthy',
+    providers: notificationManager.providers ? 
+      Array.from(notificationManager.providers.keys()) : []
+  };
 
   return status;
 }
 
 async function gracefulShutdown(server, io) {
-  logger.info('Received shutdown signal, closing connections...');
+  const shutdownStartTime = Date.now();
+  logger.warn('🛑 Initiating graceful shutdown...');
 
-  // Stop accepting new connections
-  server.close(() => {
-    logger.info('HTTP server closed');
-  });
-
-  // Close Socket.IO connections
-  io.close(() => {
-    logger.info('Socket.IO connections closed');
-  });
-
-  // Close database connection
-  try {
-    await sequelize.close();
-    logger.info('Database connection closed');
-  } catch (error) {
-    logger.error('Error closing database connection', { error: error.message });
-  }
-
-  // Close Redis connection
-  try {
-    await redisService.redisClient.quit();
-    logger.info('Redis connection closed');
-  } catch (error) {
-    logger.error('Error closing Redis connection', { error: error.message });
-  }
-
-  // Close Queue service
-  try {
-    await queueService.redisClient.quit();
-    logger.info('Queue service connection closed');
-  } catch (error) {
-    logger.error('Error closing queue service connection', { error: error.message });
-  }
-
-  // Shutdown notification services
-  try {
-    const apnService = require('./services/notifications/apn');
-    await apnService.shutdown();
-    logger.info('APN service shut down');
-  } catch (error) {
-    logger.error('Error shutting down APN service', { error: error.message });
-  }
-
-  // Force shutdown after 30 seconds
-  setTimeout(() => {
-    logger.error('Could not close connections in time, forcefully shutting down');
+  const shutdownTimeout = setTimeout(() => {
+    logger.error('❌ Could not close connections in time, forcefully shutting down');
     process.exit(1);
   }, 30000);
 
-  // Exit
-  process.exit(0);
+  try {
+    // Stop accepting new connections
+    logger.info('🔒 Closing HTTP server to new connections...');
+    await new Promise((resolve) => {
+      server.close(resolve);
+    });
+    logger.info('✅ HTTP server closed');
+
+    // Close Socket.IO connections
+    logger.info('🔌 Closing Socket.IO connections...');
+    await new Promise((resolve) => {
+      io.close(resolve);
+    });
+    logger.info('✅ Socket.IO connections closed');
+
+    // Close database connection
+    logger.info('💾 Closing database connection...');
+    await sequelize.close();
+    logger.info('✅ Database connection closed');
+
+    // Close Redis connection
+    logger.info('📦 Closing Redis connection...');
+    await redisService.redisClient.quit();
+    logger.info('✅ Redis connection closed');
+
+    // Close Queue service
+    logger.info('📋 Closing Queue service connection...');
+    await queueService.redisClient.quit();
+    logger.info('✅ Queue service connection closed');
+
+    // Shutdown notification services
+    logger.info('🔔 Shutting down notification services...');
+    const apnService = require('./services/notifications/apn');
+    await apnService.shutdown();
+    logger.info('✅ APN service shut down');
+
+    clearTimeout(shutdownTimeout);
+    
+    const shutdownDuration = Date.now() - shutdownStartTime;
+    logger.info(`✅ Graceful shutdown completed`, { 
+      duration: `${shutdownDuration}ms` 
+    });
+    
+    process.exit(0);
+  } catch (error) {
+    logger.error('❌ Error during graceful shutdown', { 
+      error: error.message,
+      stack: error.stack
+    });
+    clearTimeout(shutdownTimeout);
+    process.exit(1);
+  }
 }
 
-
-// === PHASE 1A: Lifecycle Management, Health Check, and Metrics ===
-
-
-// Secure headers and CORS
-app.use(helmet());
-app.use(cors());
-
-// Correlation ID Middleware
-app.use((req, res, next) => {
-  req.correlationId = uuidv4();
-  res.setHeader('X-Correlation-ID', req.correlationId);
-  logger.info(`Incoming request: ${req.method} ${req.url}`, { correlationId: req.correlationId });
-  next();
-});
-
-// Health Check Endpoint
-app.get('/health', (req, res) => {
-  res.status(200).send('OK');
-});
-
-// Prometheus Metrics
-const collectDefaultMetrics = promClient.collectDefaultMetrics;
-collectDefaultMetrics();
-app.get('/metrics', async (req, res) => {
-  res.set('Content-Type', promClient.register.contentType);
-  res.end(await promClient.register.metrics());
-});
-
-// Graceful Shutdown
-const shutdown = () => {
-  logger.info('Received shutdown signal, closing gracefully...');
-  server.close(() => {
-    logger.info('HTTP server closed');
-    process.exit(0);
-  });
-};
-
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
-
+// Process-level event handlers
 process.on('uncaughtException', (err) => {
-  logger.error(`Uncaught Exception: ${err.message}`, { stack: err.stack });
-  shutdown();
+  logger.error(`💥 Uncaught Exception`, { 
+    error: err.message,
+    stack: err.stack,
+    code: err.code
+  });
+  process.exit(1);
 });
 
 process.on('unhandledRejection', (reason) => {
-  logger.error(`Unhandled Rejection: ${reason}`);
-  shutdown();
+  logger.error(`💥 Unhandled Rejection`, { 
+    reason: reason.message || reason,
+    stack: reason.stack || 'No stack trace available'
+  });
+  process.exit(1);
 });
 
-// === PHASE 1B: Socket Error Handling, Flood Control, HTTPS Warning ===
-const rateLimitMap = new Map();
-
-io.on('connection', (socket) => {
-  logger.info(`Socket connected: ${socket.id}`);
-
-  // Flood control
-  socket.use((packet, next) => {
-    const now = Date.now();
-    const timestamps = rateLimitMap.get(socket.id) || [];
-    const recent = timestamps.filter(ts => now - ts < 1000);
-    recent.push(now);
-    rateLimitMap.set(socket.id, recent);
-    if (recent.length > 10) {
-      logger.warn(`Rate limit exceeded for socket ${socket.id}`);
-      return next(new Error('Rate limit exceeded'));
-    }
-    next();
-  });
-
-  // Global socket event error wrapper
-  socket.onAny((event, ...args) => {
-    try {
-      logger.info(`Socket event received: ${event}`);
-    } catch (err) {
-      logger.error(`Error processing event ${event}: ${err.message}`, { stack: err.stack });
-      socket.emit('error', 'Internal server error');
-    }
-  });
-
-  socket.on('disconnect', () => {
-    logger.info(`Socket disconnected: ${socket.id}`);
-    rateLimitMap.delete(socket.id);
-  });
-});
-
+// HTTPS warning
 if (process.env.NODE_ENV === 'production' && !process.env.SERVER_URL?.startsWith('https')) {
   logger.warn('🚨 WARNING: Server is running over HTTP in production mode. Use HTTPS (wss) for security!');
 }
+
+// Log environment information on startup
+logger.info('🌍 Environment Information', {
+  nodeVersion: process.version,
+  npmVersion: process.env.npm_package_version,
+  platform: process.platform,
+  arch: process.arch,
+  pid: process.pid,
+  ppid: process.ppid,
+  execPath: process.execPath,
+  cwd: process.cwd(),
+  memoryUsage: process.memoryUsage(),
+  cpuUsage: process.cpuUsage(),
+  env: {
+    NODE_ENV: process.env.NODE_ENV,
+    PORT: process.env.PORT || config.server.port,
+    HOST: process.env.HOST || config.server.host
+  }
+});
