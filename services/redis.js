@@ -277,6 +277,21 @@ const getConversationMessages = async (conversationId, limit = 50, offset = 0) =
   return messages;
 };
 
+
+const isUserStillOnline = async (userId) => {
+  const presence = await this.getUserPresence(userId);
+  return presence && presence.isOnline;
+}
+
+const updateUserPresence = async (userId, isOnline, socketId = null) => {
+  if (isOnline) {
+    return await this.setUserOnline(userId, socketId);
+  } else {
+    return await this.setUserOffline(userId);
+  }
+}
+
+
 // Typing indicator functions
 const setUserTyping = async (userId, conversationId) => {
   const key = KEY_PREFIXES.TYPING_STATUS + conversationId;
@@ -342,6 +357,7 @@ const ping = async () => {
   }
 };
 
+
 module.exports = {
   redisClient,
   setUserOnline,
@@ -361,5 +377,7 @@ module.exports = {
   getUnreadCounts,
   ping,
   KEY_PREFIXES,
-  TTL
+  TTL,
+  updateUserPresence,
+  isUserStillOnline
 };

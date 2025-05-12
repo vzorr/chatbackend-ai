@@ -1,5 +1,5 @@
 // socket/socketInitializer.js
-const { createAdapter } = require('socket.io-redis');
+const { createAdapter } = require('@socket.io/redis-adapter');
 const Redis = require('ioredis');
 const logger = require('../utils/logger');
 const socketAuthMiddleware = require('./middlewares/socketAuthMiddleware');

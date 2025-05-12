@@ -8,6 +8,8 @@ const redisService = require('../services/redis');
 const logger = require('../utils/logger');
 const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
+const bcrypt = require('bcrypt');
+
 
 // Register new user
 router.post('/register', async (req, res, next) => {
