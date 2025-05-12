@@ -1,52 +1,25 @@
-const { Sequelize } = require("sequelize");
-const config = require('../config/config');
+// db/index.js
+const connectionManager = require('./connectionManager');
 const logger = require('../utils/logger');
 
-// Create Sequelize instance with configuration
-const sequelize = new Sequelize(
-  config.database.name,
-  config.database.user,
-  config.database.password,
-  {
-    host: config.database.host,
-    port: config.database.port,
-    dialect: config.database.dialect,
-    logging: config.database.logging ? 
-      (msg) => logger.debug('SQL Query', { query: msg }) : false,
-    pool: {
-      max: config.database.pool.max,
-      min: config.database.pool.min,
-      acquire: config.database.pool.acquire,
-      idle: config.database.pool.idle
-    },
-    // Retry logic for connection
-    retry: {
-      match: [
-        Sequelize.ConnectionError,
-        Sequelize.ConnectionTimedOutError,
-        Sequelize.TimeoutError,
-        /Deadlock/i,
-        /SQLITE_BUSY/
-      ],
-      max: 3
-    }
-  }
-);
+// Initialize models when this file is required
+const models = require('./models');
 
-// Test connection on initialization
-sequelize.authenticate()
+// Export the configured Sequelize instance
+module.exports = connectionManager.getConnection();
+
+// Export connection manager for direct access
+module.exports.connectionManager = connectionManager;
+
+// Initialize connection on module load
+connectionManager.initialize()
   .then(() => {
-    logger.info('Database connection established successfully', {
-      host: config.database.host,
-      database: config.database.name
-    });
+    logger.info('Database module initialized successfully');
   })
   .catch(err => {
-    logger.error('Unable to connect to the database', { 
+    logger.error('Failed to initialize database module', {
       error: err.message,
-      host: config.database.host,
-      database: config.database.name
+      stack: err.stack
     });
+    process.exit(1);
   });
-
-module.exports = sequelize;

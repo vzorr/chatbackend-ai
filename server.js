@@ -1,4 +1,4 @@
-// server.js - Hybrid version combining best features
+// server.js - Enhanced with connection manager and push notifications
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -14,7 +14,7 @@ const swaggerUi = require('swagger-ui-express');
 require('dotenv').config();
 
 const config = require('./config/config');
-const sequelize = require('./db');
+const connectionManager = require('./db/connectionManager');
 const logger = require('./utils/logger');
 const redisService = require('./services/redis');
 const queueService = require('./services/queue/queueService');
@@ -67,6 +67,10 @@ logger.info('📋 Server Configuration', {
   cluster: {
     enabled: config.cluster.enabled,
     workerCount: config.cluster.workerCount
+  },
+  notifications: {
+    fcmEnabled: !!config.notifications.fcm.enabled,
+    apnEnabled: !!config.notifications.apn.enabled
   }
 });
 
@@ -159,18 +163,26 @@ async function startServer() {
   
   logger.info('✅ Express app created');
 
-  // Initialize Socket.IO server
+  // Initialize Socket.IO server with enhanced configuration
   const io = new Server(server, {
     cors: {
       origin: config.server.corsOrigin,
       methods: ['GET', 'POST'],
-      credentials: true
+      credentials: true,
+      allowedHeaders: ['Authorization', 'Content-Type']
     },
     pingTimeout: 30000,
     pingInterval: 10000,
+    maxHttpBufferSize: 1e6, // 1MB
     path: config.server.socketPath,
     transports: ['websocket', 'polling'],
-    allowEIO3: true
+    allowEIO3: true,
+    perMessageDeflate: {
+      threshold: 1024 // only compress if over 1KB
+    },
+    httpCompression: {
+      threshold: 1024
+    }
   });
 
   logger.info('✅ Socket.IO server instance created', {
@@ -206,20 +218,54 @@ async function startServer() {
   // Security middleware
   if (config.security.enableHelmet) {
     app.use(helmet({
-      contentSecurityPolicy: config.server.nodeEnv === 'production'
+      contentSecurityPolicy: config.server.nodeEnv === 'production' ? {
+        directives: {
+          defaultSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+          imgSrc: ["'self'", "data:", "https:"],
+          connectSrc: ["'self'", "wss:", "https:"],
+          fontSrc: ["'self'"],
+          objectSrc: ["'none'"],
+          mediaSrc: ["'self'"],
+          frameSrc: ["'none'"],
+        }
+      } : false
     }));
     logger.info('✅ Helmet security middleware enabled');
   }
 
   // Compression middleware
-  app.use(compression());
+  app.use(compression({
+    filter: (req, res) => {
+      if (req.headers['x-no-compression']) {
+        return false;
+      }
+      return compression.filter(req, res);
+    },
+    level: 6
+  }));
   logger.info('✅ Compression middleware enabled');
 
-  // CORS middleware
+  // CORS middleware with enhanced configuration
   app.use(cors({
-    origin: config.server.corsOrigin,
+    origin: (origin, callback) => {
+      // Allow requests with no origin (mobile apps)
+      if (!origin) return callback(null, true);
+      
+      const allowedOrigins = config.server.corsOrigin.split(',').map(o => o.trim());
+      
+      if (allowedOrigins.includes('*') || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-Key'],
+    exposedHeaders: ['X-Correlation-ID', 'X-RateLimit-Limit', 'X-RateLimit-Remaining'],
+    maxAge: 86400 // 24 hours
   }));
   logger.info('✅ CORS middleware configured', { origin: config.server.corsOrigin });
 
@@ -232,12 +278,16 @@ async function startServer() {
   app.use(requestLogger);
   logger.info('✅ Request logging middleware enabled');
 
-  // Rate limiting
+  // Rate limiting with enhanced configuration
   const apiLimiter = rateLimit({
     windowMs: config.rateLimiting.windowMs,
     max: config.rateLimiting.max,
     standardHeaders: true,
     legacyHeaders: false,
+    skip: (req) => {
+      // Skip rate limiting for health checks and metrics
+      return req.path === '/health' || req.path === '/metrics';
+    },
     handler: (req, res) => {
       logger.warn('⚠️ Rate limit exceeded', { 
         ip: req.ip, 
@@ -249,7 +299,7 @@ async function startServer() {
         success: false,
         error: {
           code: 'RATE_LIMIT_EXCEEDED',
-          message: 'Too many requests',
+          message: 'Too many requests, please try again later',
           retryAfter: res.getHeader('Retry-After')
         }
       });
@@ -264,10 +314,13 @@ async function startServer() {
 
   // Static files
   const uploadsPath = path.join(__dirname, 'uploads');
-  app.use('/uploads', express.static(uploadsPath));
+  app.use('/uploads', express.static(uploadsPath, {
+    maxAge: '1d',
+    etag: true
+  }));
   logger.info('✅ Static file serving configured', { path: '/uploads' });
 
-  // Health check endpoint
+  // Health check endpoint with enhanced checks
   app.get('/health', async (req, res) => {
     const startTime = Date.now();
     const health = await getHealthStatus();
@@ -287,10 +340,36 @@ async function startServer() {
   if (config.monitoring.metrics.enabled) {
     promClient.collectDefaultMetrics();
     
-    app.get('/metrics', async (req, res) => {
-      res.set('Content-Type', promClient.register.contentType);
-      res.end(await promClient.register.metrics());
+    // Custom metrics
+    const httpRequestDuration = new promClient.Histogram({
+      name: 'http_request_duration_seconds',
+      help: 'Duration of HTTP requests in seconds',
+      labelNames: ['method', 'route', 'status_code']
     });
+
+    const activeConnections = new promClient.Gauge({
+      name: 'websocket_active_connections',
+      help: 'Number of active WebSocket connections'
+    });
+
+    // Track metrics
+    app.use((req, res, next) => {
+      const end = httpRequestDuration.startTimer();
+      res.on('finish', () => {
+        end({ method: req.method, route: req.route?.path || 'unknown', status_code: res.statusCode });
+      });
+      next();
+    });
+
+    app.get('/metrics', async (req, res) => {
+      try {
+        res.set('Content-Type', promClient.register.contentType);
+        res.end(await promClient.register.metrics());
+      } catch (error) {
+        res.status(500).end(error);
+      }
+    });
+    
     logger.info('✅ Prometheus metrics endpoint configured', { path: '/metrics' });
   }
 
@@ -320,12 +399,12 @@ async function startServer() {
   app.use('/api', apiRoutes);
   logger.info('✅ Legacy API routes configured', { path: '/api' });
 
-  // File upload endpoint
+  // File upload endpoint with enhanced error handling
   const upload = createUploadMiddleware();
   app.post('/upload', 
     authMiddleware.authenticate.bind(authMiddleware),
     upload.single('file'), 
-    (req, res) => {
+    (req, res, next) => {
       if (!req.file) {
         logger.warn('⚠️ File upload attempted without file', { 
           correlationId: req.correlationId 
@@ -360,6 +439,71 @@ async function startServer() {
   );
   logger.info('✅ File upload endpoint configured', { path: '/upload' });
 
+  // Push notification endpoints
+  app.post('/api/v1/notifications/send',
+    authMiddleware.authenticate.bind(authMiddleware),
+    authMiddleware.authorize('admin'),
+    async (req, res, next) => {
+      try {
+        const { userId, title, body, data } = req.body;
+        
+        if (!userId || !title) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'INVALID_REQUEST',
+              message: 'userId and title are required'
+            }
+          });
+        }
+
+        const result = await notificationManager.sendNotification(userId, {
+          type: 'admin_notification',
+          title,
+          body,
+          data
+        });
+
+        res.json({
+          success: true,
+          result
+        });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
+
+  app.post('/api/v1/notifications/batch',
+    authMiddleware.authenticate.bind(authMiddleware),
+    authMiddleware.authorize('admin'),
+    async (req, res, next) => {
+      try {
+        const { notifications } = req.body;
+        
+        if (!Array.isArray(notifications) || notifications.length === 0) {
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'INVALID_REQUEST',
+              message: 'notifications array is required'
+            }
+          });
+        }
+
+        const results = await notificationManager.batchSendNotifications(notifications);
+
+        res.json({
+          success: true,
+          results
+        });
+      } catch (error) {
+        next(error);
+      }
+    }
+  );
+  logger.info('✅ Push notification endpoints configured');
+
   // Root route
   app.get('/', (req, res) => {
     res.json({
@@ -368,7 +512,8 @@ async function startServer() {
       version: process.env.npm_package_version || '1.0.0',
       environment: config.server.nodeEnv,
       features: config.features,
-      docs: `${req.protocol}://${req.get('host')}/api-docs`
+      docs: `${req.protocol}://${req.get('host')}/api-docs`,
+      health: `${req.protocol}://${req.get('host')}/health`
     });
   });
   logger.info('✅ Root route configured', { path: '/' });
@@ -390,21 +535,25 @@ async function startServer() {
   const HOST = config.server.host;
 
   try {
-    logger.info('🔌 Connecting to database...');
-    // Connect to database
-    await sequelize.authenticate();
-    logger.info('✅ Database connection established', {
-      host: config.database.host,
-      database: config.database.name,
-      dialect: config.database.dialect
-    });
+    logger.info('🔌 Initializing database connection...');
+    
+    // Initialize database connection using connection manager
+    await connectionManager.initialize();
+    logger.info('✅ Database connection initialized');
 
     // Sync models in development
     if (config.server.nodeEnv !== 'production' && process.env.DB_ALTER === 'true') {
       logger.info('🔄 Synchronizing database models...');
-      await sequelize.sync({ alter: true });
+      const db = require('./db/models');
+      await db.sync({ alter: true });
       logger.info('✅ Database models synchronized');
     }
+
+    // Initialize push notification manager
+    await notificationManager.initialize();
+    logger.info('✅ Push notification manager initialized', {
+      providers: Array.from(notificationManager.providers.keys())
+    });
 
     // Start HTTP server
     await new Promise((resolve) => {
@@ -419,6 +568,7 @@ async function startServer() {
         });
         logger.info(`📚 API Documentation available at: http://${HOST}:${PORT}/api-docs`);
         logger.info(`🏥 Health check available at: http://${HOST}:${PORT}/health`);
+        logger.info(`📊 Metrics available at: http://${HOST}:${PORT}/metrics`);
         
         // Log enabled features
         const enabledFeatures = Object.entries(config.features)
@@ -426,6 +576,12 @@ async function startServer() {
           .map(([feature]) => feature);
         
         logger.info('🎯 Enabled features', { features: enabledFeatures });
+        
+        // Log notification providers
+        logger.info('📱 Push notification providers', {
+          fcm: notificationManager.providers.has('FCM'),
+          apn: notificationManager.providers.has('APN')
+        });
         
         resolve();
       });
@@ -437,7 +593,9 @@ async function startServer() {
         database: '✓',
         redis: '✓',
         socketIO: '✓',
-        notifications: notificationManager.initialized ? '✓' : '✗'
+        notifications: notificationManager.initialized ? '✓' : '✗',
+        fcm: notificationManager.providers.has('FCM') ? '✓' : '✗',
+        apn: notificationManager.providers.has('APN') ? '✓' : '✗'
       }
     });
 
@@ -516,16 +674,11 @@ async function getHealthStatus() {
     services: {}
   };
 
-  // Check database
+  // Check database with connection manager
   try {
-    const startTime = Date.now();
-    await sequelize.authenticate();
-    const duration = Date.now() - startTime;
-    status.services.database = {
-      status: 'healthy',
-      responseTime: `${duration}ms`
-    };
-    logger.debug('✅ Database health check passed', { duration: `${duration}ms` });
+    const dbHealth = await connectionManager.healthCheck();
+    status.services.database = dbHealth;
+    logger.debug('✅ Database health check passed', { responseTime: dbHealth.responseTime });
   } catch (error) {
     status.services.database = {
       status: 'unhealthy',
@@ -577,8 +730,16 @@ async function getHealthStatus() {
   status.services.notifications = {
     status: notificationManager.initialized ? 'healthy' : 'unhealthy',
     providers: notificationManager.providers ? 
-      Array.from(notificationManager.providers.keys()) : []
+      Array.from(notificationManager.providers.keys()) : [],
+    fcm: notificationManager.providers?.has('FCM') || false,
+    apn: notificationManager.providers?.has('APN') || false
   };
+
+  // Get connection stats
+  if (connectionManager.checkConnection()) {
+    const connectionStats = await connectionManager.getConnectionStats();
+    status.services.database.pool = connectionStats;
+  }
 
   return status;
 }
@@ -609,7 +770,7 @@ async function gracefulShutdown(server, io) {
 
     // Close database connection
     logger.info('💾 Closing database connection...');
-    await sequelize.close();
+    await connectionManager.close();
     logger.info('✅ Database connection closed');
 
     // Close Redis connection
@@ -617,9 +778,11 @@ async function gracefulShutdown(server, io) {
     await redisService.redisClient.quit();
     logger.info('✅ Redis connection closed');
 
-    // Close Queue service
+    // Close Queue service connection
     logger.info('📋 Closing Queue service connection...');
-    await queueService.redisClient.quit();
+    if (queueService.redisClient && queueService.redisClient.quit) {
+      await queueService.redisClient.quit();
+    }
     logger.info('✅ Queue service connection closed');
 
     // Shutdown notification services
@@ -666,7 +829,7 @@ process.on('unhandledRejection', (reason) => {
 
 // HTTPS warning
 if (process.env.NODE_ENV === 'production' && !process.env.SERVER_URL?.startsWith('https')) {
-  logger.warn('🚨 WARNING: Server is running over HTTP in production mode. Use HTTPS (wss) for security!');
+  logger.warn('🚨 WARNING: Server is running over HTTP in production mode. Use HTTPS (wss) for WebSocket security!');
 }
 
 // Log environment information on startup
