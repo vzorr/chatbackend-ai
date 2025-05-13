@@ -6,7 +6,6 @@ const logger = require('../utils/logger');
 let sequelizeInstance = null;
 let isConnected = false;
 let connectionTimestamp = null;
-let retryCounter = 0;
 
 /**
  * Initialize Sequelize connection safely.
@@ -46,16 +45,12 @@ async function initialize() {
       },
     });
 
-    // Attach event listeners
-    sequelizeInstance.connectionManager.on('error', (err) => {
-      logger.error('Sequelize connectionManager error event triggered', { error: err.message });
-    });
-
+    // Proper usage: Add Sequelize hook (valid approach)
     sequelizeInstance.addHook('afterConnect', (connection) => {
       logger.info('✅ Sequelize connection established and afterConnect hook triggered');
     });
 
-    // Test initial connection
+    // Test initial connection (recommended pattern)
     await sequelizeInstance.authenticate();
     isConnected = true;
     connectionTimestamp = new Date();
@@ -66,7 +61,6 @@ async function initialize() {
     logger.error('❌ Failed to initialize database connection', { error: error.message });
     sequelizeInstance = null;
     isConnected = false;
-    retryCounter++;
     throw error;
   }
 }

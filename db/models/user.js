@@ -1,15 +1,16 @@
 'use strict';
 
+const { v4: uuidv4 } = require('uuid');
+
 module.exports = (sequelize, DataTypes) => {
   const User = sequelize.define('User', {
     id: {
       type: DataTypes.UUID,
-      defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
     },
     externalId: {
       type: DataTypes.UUID,
-      allowNull: true,
+      allowNull: false,
       unique: true,
       comment: 'UUID of the user from the main React Native application'
     },
@@ -19,7 +20,7 @@ module.exports = (sequelize, DataTypes) => {
     },
     phone: {
       type: DataTypes.STRING,
-      allowNull: true
+      allowNull: false,
     },
     email: {
       type: DataTypes.STRING,
@@ -87,12 +88,12 @@ module.exports = (sequelize, DataTypes) => {
       let user = await this.findOne({ where: { externalId } });
 
       if (!user) {
-        // If no user found, create a new one
+        // Generate UUID manually for id
         user = await this.create({
-          id: DataTypes.UUIDV4(),
+          id: uuidv4(),   // ✅ Correct and explicit UUID generation
           externalId,
           name: tokenData.name || 'User',
-          phone: tokenData.phone || null,
+          phone: tokenData.phone || 'unknown',  // Ensure phone is present due to allowNull: false
           email: tokenData.email || null,
           role: 'client',
           isOnline: true

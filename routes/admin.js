@@ -3,7 +3,7 @@ const express = require('express');
 const router = express.Router();
 const { Op } = require('sequelize');
 const { User, Message, Conversation } = require('../db/models');
-const authenticate = require('../middleware/authenticate');
+const { authenticate } = require('../middleware/authentication');
 const { validateUUID } = require('../utils/validation');
 const logger = require('../utils/logger');
 

@@ -27,13 +27,15 @@ const { createUploadMiddleware } = require('./services/file-upload');
 const promClient = require('prom-client');
 
 // Import routes
-/*const apiRoutes = require('./routes');
+const apiRoutes = require('./routes');
+
 const authRoutes = require('./routes/auth');
+
 const userRoutes = require('./routes/user');
 const conversationRoutes = require('./routes/conversation');
 const messageRoutes = require('./routes/message');
 const adminRoutes = require('./routes/admin');
-*/
+
 // Import socket initializer
 const socketInitializer = require('./socket/socketInitializer');
 
@@ -526,18 +528,7 @@ async function startServer() {
     await connectionManager.initialize();
     logger.info('✅ Database connection initialized');
 
-    logger.info('🔧 Initializing and loading models...');
-    const db = require('./db/models');
-    if (db.initialize) {
-      await db.initialize();
-      logger.info('✅ Database models loaded and initialized');
-    }
-
-    if (config.server.nodeEnv !== 'production' && process.env.DB_ALTER === 'true') {
-      logger.info('🔄 Syncing database models (alter mode)...');
-      await db.sequelize.sync({ alter: true });
-      logger.info('✅ Database models synced (alter mode)');
-    }
+  
   } catch (error) {
     logger.error('❌ Fatal Error during DB initialization or model loading', {
       error: error.message,

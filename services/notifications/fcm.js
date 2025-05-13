@@ -1,6 +1,8 @@
-// services/notifications/fcm.js
 const admin = require('firebase-admin');
 const logger = require('../../utils/logger');
+const fs = require('fs');
+const path = require('path');
+const config = require('../../config/config');  // Corrected path to config.js at root level
 
 class FcmNotificationService {
   constructor() {
@@ -13,28 +15,27 @@ class FcmNotificationService {
       if (this.initialized) {
         return true;
       }
-  
-      const credentials = process.env.FIREBASE_CREDENTIALS;
-      if (!credentials) {
-        logger.warn('Firebase credentials not configured');
+
+      const credentialsPath = config.notifications.fcm.credentials;
+      if (!credentialsPath) {
+        logger.warn('Firebase credentials path not configured (FIREBASE_CREDENTIALS)');
         return false;
       }
-  
-      // Ensure proper JSON parsing
+
       let serviceAccount;
       try {
-        serviceAccount = typeof credentials === 'string' 
-          ? JSON.parse(credentials) 
-          : credentials;
-      } catch (parseError) {
-        logger.error('Failed to parse Firebase credentials', { error: parseError.message });
+        const resolvedPath = path.resolve(credentialsPath);
+        const rawData = fs.readFileSync(resolvedPath, 'utf8');
+        serviceAccount = JSON.parse(rawData);
+      } catch (readError) {
+        logger.error('Failed to read or parse Firebase credentials file', { error: readError.message, path: credentialsPath });
         return false;
       }
-  
+
       this.firebaseApp = admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
       });
-  
+
       this.initialized = true;
       logger.info('FCM notification service initialized successfully');
       return true;

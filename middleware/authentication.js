@@ -209,4 +209,12 @@ class AuthenticationMiddleware {
   }
 }
 
-module.exports = new AuthenticationMiddleware();
+// Create instance
+const authMiddleware = new AuthenticationMiddleware();
+
+// Export the instance and bound methods
+module.exports = authMiddleware;
+module.exports.authenticate = authMiddleware.authenticate.bind(authMiddleware);
+module.exports.optionalAuthenticate = authMiddleware.optionalAuthenticate.bind(authMiddleware);
+module.exports.authorize = authMiddleware.authorize.bind(authMiddleware);
+module.exports.authenticateApiKey = authMiddleware.authenticateApiKey.bind(authMiddleware);

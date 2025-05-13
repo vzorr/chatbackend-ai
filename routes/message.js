@@ -10,7 +10,7 @@ const {
   ConversationParticipant,
   User 
 } = require('../db/models');
-const authenticate = require('../middleware/authentication');
+const { authenticate } = require('../middleware/authentication');
 const redisService = require('../services/redis');
 const queueService = require('../services/queue/queueService');
 const logger = require('../utils/logger');
