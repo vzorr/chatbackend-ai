@@ -1,22 +1,17 @@
 // services/sync/userSyncService.js
-const { User, TokenHistory } = require('../../db/models');
+const { User, TokenHistory, DeviceToken } = require('../../db/models');
 const logger = require('../../utils/logger');
 const { validateUUID } = require('../../utils/validation');
 const { v4: uuidv4 } = require('uuid');
-// Add this import at the top of userSyncService.js:
-const { User, TokenHistory, DeviceToken } = require('../../db/models');
+const crypto = require('crypto');
 
 class UserSyncService {
   constructor() {
     this.syncQueue = new Map();
   }
 
-  /**
-   * Sync user from main application database upon login
-   */
   async syncUserFromMainApp(mainAppData, authToken) {
     const operationId = uuidv4();
-    
     logger.info('Starting user sync from main app', {
       operationId,
       externalId: mainAppData.appUserId,
@@ -24,15 +19,11 @@ class UserSyncService {
     });
 
     try {
-      // Validate external ID (app user ID)
       if (!validateUUID(mainAppData.appUserId)) {
         throw new Error('Invalid app user ID format');
       }
 
-      // Check if user already exists
-      let user = await User.findOne({
-        where: { externalId: mainAppData.appUserId }
-      });
+      let user = await User.findOne({ where: { externalId: mainAppData.appUserId } });
 
       const syncData = {
         externalId: mainAppData.appUserId,
@@ -54,9 +45,7 @@ class UserSyncService {
       };
 
       if (user) {
-        // Update existing user
         await user.update(syncData);
-        
         logger.info('Updated existing user from main app', {
           operationId,
           userId: user.id,
@@ -64,14 +53,12 @@ class UserSyncService {
           changes: this.getChangedFields(user, syncData)
         });
       } else {
-        // Create new user
         user = await User.create({
           id: uuidv4(),
           ...syncData,
           isOnline: false,
           lastSeen: null
         });
-
         logger.info('Created new user from main app', {
           operationId,
           userId: user.id,
@@ -79,7 +66,6 @@ class UserSyncService {
         });
       }
 
-      // Store sync operation for audit
       await this.logSyncOperation({
         operationId,
         userId: user.id,
@@ -127,12 +113,8 @@ class UserSyncService {
     }
   }
 
-  /**
-   * Sync device token from main app
-   */
   async syncDeviceToken(userId, tokenData, requestInfo) {
     const operationId = uuidv4();
-    
     logger.info('Syncing device token', {
       operationId,
       userId,
@@ -141,18 +123,13 @@ class UserSyncService {
     });
 
     try {
-      // Validate user exists
       const user = await User.findByPk(userId);
       if (!user) {
         throw new Error('User not found');
       }
 
-      // Check for existing token
       const existingToken = await DeviceToken.findOne({
-        where: {
-          userId,
-          deviceId: tokenData.deviceId
-        }
+        where: { userId, deviceId: tokenData.deviceId }
       });
 
       let action = 'REGISTERED';
@@ -181,7 +158,6 @@ class UserSyncService {
         });
       }
 
-      // Log token history for audit
       await TokenHistory.create({
         userId,
         token: tokenData.token,
@@ -222,7 +198,6 @@ class UserSyncService {
         tokenData
       });
 
-      // Log failure in history
       await TokenHistory.logTokenFailure({
         userId,
         token: tokenData.token,
@@ -235,9 +210,6 @@ class UserSyncService {
     }
   }
 
-  /**
-   * Batch sync multiple users
-   */
   async batchSyncUsers(usersData, authToken) {
     const operationId = uuidv4();
     const results = [];
@@ -274,37 +246,24 @@ class UserSyncService {
 
     logger.info('Batch user sync completed', summary);
 
-    return {
-      summary,
-      results
-    };
+    return { summary, results };
   }
 
-  /**
-   * Get changed fields between old and new data
-   */
   getChangedFields(oldData, newData) {
     const changes = {};
     const fields = ['name', 'email', 'phone', 'avatar', 'role'];
 
     for (const field of fields) {
       if (oldData[field] !== newData[field]) {
-        changes[field] = {
-          old: oldData[field],
-          new: newData[field]
-        };
+        changes[field] = { old: oldData[field], new: newData[field] };
       }
     }
 
     return changes;
   }
 
-  /**
-   * Log sync operation for audit
-   */
   async logSyncOperation(data) {
     try {
-      // Store in a sync_operations table or use a logging service
       logger.info('Sync operation logged', {
         operationId: data.operationId,
         action: data.action,
@@ -312,21 +271,13 @@ class UserSyncService {
         externalId: data.externalId
       });
     } catch (error) {
-      logger.error('Failed to log sync operation', {
-        error: error.message,
-        data
-      });
+      logger.error('Failed to log sync operation', { error: error.message, data });
     }
   }
 
-  /**
-   * Validate sync request from main app
-   */
   validateSyncRequest(request, signature) {
-    // Implement signature validation for security
-    // This should verify that the request is coming from the main app
     const expectedSignature = this.generateSignature(request);
-    
+
     if (signature !== expectedSignature) {
       throw new Error('Invalid sync request signature');
     }
@@ -334,16 +285,9 @@ class UserSyncService {
     return true;
   }
 
-  /**
-   * Generate signature for request validation
-   */
   generateSignature(data) {
-    // Implement proper signature generation using shared secret
-    const crypto = require('crypto');
     const secret = process.env.SYNC_SECRET_KEY;
-    
-    return crypto
-      .createHmac('sha256', secret)
+    return crypto.createHmac('sha256', secret)
       .update(JSON.stringify(data))
       .digest('hex');
   }

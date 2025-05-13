@@ -1,0 +1,16 @@
+// .sequelizerc
+const path = require('path');
+
+module.exports = {
+  // Tell CLI where to find database config
+  'config': path.resolve('config', 'database.js'),
+  
+  // Models are in db/models, not models/
+  'models-path': path.resolve('db', 'models'),
+  
+  // Seeders location (if you use them)
+  'seeders-path': path.resolve('db', 'seeders'),
+  
+  // Migrations stay in the default location
+  'migrations-path': path.resolve('migrations')
+};

@@ -9,8 +9,9 @@ const rateLimit = require('express-rate-limit');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const cluster = require('cluster');
-const swaggerJsDoc = require('swagger-jsdoc');
-const swaggerUi = require('swagger-ui-express');
+//const swaggerConfig = require('./config/swagger');
+//const swaggerAuth = require('./middleware/swaggerAuth');
+
 require('dotenv').config();
 
 const config = require('./config/config');
@@ -26,13 +27,13 @@ const { createUploadMiddleware } = require('./services/file-upload');
 const promClient = require('prom-client');
 
 // Import routes
-const apiRoutes = require('./routes');
+/*const apiRoutes = require('./routes');
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/user');
 const conversationRoutes = require('./routes/conversation');
 const messageRoutes = require('./routes/message');
 const adminRoutes = require('./routes/admin');
-
+*/
 // Import socket initializer
 const socketInitializer = require('./socket/socketInitializer');
 
@@ -74,35 +75,19 @@ logger.info('📋 Server Configuration', {
   }
 });
 
-// Swagger configuration
-const swaggerOptions = {
-  definition: {
-    openapi: '3.0.0',
-    info: {
-      title: 'VortexHive Chat API',
-      version: '1.0.0',
-      description: 'API documentation for VortexHive Chat Backend',
-    },
-    servers: [
-      {
-        url: config.server.apiUrl || `http://localhost:${config.server.port}`,
-        description: config.server.nodeEnv === 'production' ? 'Production Server' : 'Development Server'
-      }
-    ],
-    components: {
-      securitySchemes: {
-        bearerAuth: {
-          type: 'http',
-          scheme: 'bearer',
-          bearerFormat: 'JWT'
-        }
-      }
-    },
-    security: [{ bearerAuth: [] }]
-  },
-  apis: ['./routes/*.js']
-};
+// Swagger documentation setup
+// Add authentication in production
 
+//const swaggerMiddleware = process.env.NODE_ENV === 'production' ? swaggerAuth() : null;
+
+// Initialize Swagger documentation
+//const swaggerInfo = swaggerConfig.initialize(app, '/api-docs', swaggerMiddleware);
+/*logger.info('✅ Swagger documentation configured', { 
+  path: swaggerInfo.path,
+  specPath: `${swaggerInfo.path}.json`,
+  authEnabled: swaggerInfo.authEnabled
+});
+*/
 // Cluster mode for production
 if (config.cluster.enabled && cluster.isPrimary) {
   logger.info(`🔧 Primary ${process.pid} is running in cluster mode`);
@@ -381,11 +366,12 @@ async function startServer() {
   logger.info('✅ Client SDK config endpoint configured', { path: '/api/config' });
 
   // Swagger documentation
-  const swaggerDocs = swaggerJsDoc(swaggerOptions);
-  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
-  logger.info('✅ Swagger documentation configured', { path: '/api-docs' });
+  //const swaggerDocs = swaggerJsDoc(swaggerOptions);
+  //app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
+  //logger.info('✅ Swagger documentation configured', { path: '/api-docs' });
 
   // API Routes - Versioned
+  /*
   app.use('/api/v1/auth', authRoutes);
   app.use('/api/v1/users', userRoutes);
   app.use('/api/v1/conversations', conversationRoutes);
@@ -394,9 +380,9 @@ async function startServer() {
   logger.info('✅ Versioned API routes configured', { 
     routes: ['/api/v1/auth', '/api/v1/users', '/api/v1/conversations', '/api/v1/messages', '/api/v1/admin']
   });
-
+*/
   // API Routes - Legacy support
-  app.use('/api', apiRoutes);
+  //app.use('/api', apiRoutes);
   logger.info('✅ Legacy API routes configured', { path: '/api' });
 
   // File upload endpoint with enhanced error handling
@@ -534,21 +520,33 @@ async function startServer() {
   const PORT = config.server.port;
   const HOST = config.server.host;
 
+  
   try {
-    logger.info('🔌 Initializing database connection...');
-    
-    // Initialize database connection using connection manager
+    logger.info('🔌 Initializing database connection (via connectionManager)...');
     await connectionManager.initialize();
     logger.info('✅ Database connection initialized');
 
-    // Sync models in development
-    if (config.server.nodeEnv !== 'production' && process.env.DB_ALTER === 'true') {
-      logger.info('🔄 Synchronizing database models...');
-      const db = require('./db/models');
-      await db.sync({ alter: true });
-      logger.info('✅ Database models synchronized');
+    logger.info('🔧 Initializing and loading models...');
+    const db = require('./db/models');
+    if (db.initialize) {
+      await db.initialize();
+      logger.info('✅ Database models loaded and initialized');
     }
 
+    if (config.server.nodeEnv !== 'production' && process.env.DB_ALTER === 'true') {
+      logger.info('🔄 Syncing database models (alter mode)...');
+      await db.sequelize.sync({ alter: true });
+      logger.info('✅ Database models synced (alter mode)');
+    }
+  } catch (error) {
+    logger.error('❌ Fatal Error during DB initialization or model loading', {
+      error: error.message,
+      stack: error.stack
+    });
+    process.exit(1);
+  }
+
+  try {
     // Initialize push notification manager
     await notificationManager.initialize();
     logger.info('✅ Push notification manager initialized', {
@@ -687,6 +685,7 @@ async function getHealthStatus() {
     status.status = 'unhealthy';
     logger.error('❌ Database health check failed', { error: error.message });
   }
+
 
   // Check Redis
   try {

@@ -126,4 +126,4 @@ const setupBot = async () => {
 };
 
 // Run the setup
-setupBot();
+//setupBot();

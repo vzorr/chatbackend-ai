@@ -1,163 +1,106 @@
-'use strict';
-
+// db/models/index.js
 const fs = require('fs');
 const path = require('path');
-const { Sequelize, DataTypes } = require('sequelize');
-const connectionManager = require('../connectionManager');
-const logger = require('../../utils/logger');
-
+const Sequelize = require('sequelize');
 const basename = path.basename(__filename);
-const db = {};
+const logger = require('../../utils/logger');
+const connectionManager = require('../connectionManager');
 
-// Get sequelize instance from connection manager
-let sequelize;
-try {
-  sequelize = connectionManager.getConnection();
-} catch (error) {
-  logger.error('Failed to get database connection', { error: error.message });
-  // Create a new instance if connection manager hasn't been initialized yet
-  const config = require('../../config/config').database;
-  sequelize = new Sequelize(config.name, config.user, config.password, {
-    host: config.host,
-    port: config.port,
-    dialect: config.dialect,
-    logging: config.logging ? (msg) => logger.debug('SQL Query', { query: msg }) : false,
-    pool: config.pool
-  });
+const db = {};
+let sequelizeInstance = null;
+let initialized = false;
+
+/**
+ * Initializes all models and associations using the enterprise pattern.
+ * Lazy initialization with ConnectionManager.
+ */
+async function initializeModels() {
+  if (initialized) {
+    logger.info('Models already initialized, skipping re-initialization.');
+    return db;
+  }
+
+  try {
+    // Ensure ConnectionManager is initialized
+    if (!connectionManager.isConnected) {
+      logger.info('Initializing database connection from ConnectionManager...');
+      await connectionManager.initialize();
+      logger.info('Database connection initialized successfully from ConnectionManager');
+    }
+
+    sequelizeInstance = connectionManager.getConnection();
+
+    logger.info('Loading models...');
+    fs
+      .readdirSync(__dirname)
+      .filter((file) => {
+        return (
+          file.indexOf('.') !== 0 &&
+          file !== basename &&
+          (file.slice(-3) === '.js' || file.slice(-3) === '.ts')
+        );
+      })
+      .forEach((file) => {
+        const model = require(path.join(__dirname, file))(sequelizeInstance, Sequelize.DataTypes);
+        db[model.name] = model;
+        logger.info(`Model loaded: ${model.name}`);
+      });
+
+    // Run model associations
+    Object.keys(db).forEach((modelName) => {
+      if (db[modelName].associate) {
+        db[modelName].associate(db);
+        logger.info(`Associations setup for model: ${modelName}`);
+      }
+    });
+
+    // Add hooks if defined in models (ensuring no hook is skipped)
+    Object.keys(db).forEach((modelName) => {
+      if (db[modelName].addHooks) {
+        db[modelName].addHooks();
+        logger.info(`Hooks registered for model: ${modelName}`);
+      }
+    });
+
+    db.sequelize = sequelizeInstance;
+    db.Sequelize = Sequelize;
+
+    initialized = true;
+    logger.info('✅ All models initialized and associations set up successfully.');
+
+    return db;
+  } catch (error) {
+    logger.error('❌ Error initializing models', { error: error.message });
+    throw error;
+  }
 }
 
-// Load all models
-fs
-  .readdirSync(__dirname)
-  .filter(file => {
-    return (
-      file.indexOf('.') !== 0 &&
-      file !== basename &&
-      file.slice(-3) === '.js' &&
-      file.indexOf('.test.js') === -1
-    );
-  })
-  .forEach(file => {
-    try {
-      const model = require(path.join(__dirname, file))(sequelize, DataTypes);
-      db[model.name] = model;
-      logger.debug(`Model loaded: ${model.name}`);
-    } catch (error) {
-      logger.error(`Failed to load model from file: ${file}`, {
-        error: error.message,
-        stack: error.stack
-      });
-    }
-  });
-
-// Setup associations
-Object.keys(db).forEach(modelName => {
-  if (db[modelName].associate) {
-    try {
-      db[modelName].associate(db);
-      logger.debug(`Associations set up for model: ${modelName}`);
-    } catch (error) {
-      logger.error(`Failed to set up associations for model: ${modelName}`, {
-        error: error.message
-      });
-    }
+/**
+ * Getter to ensure connection and models are safely retrieved.
+ */
+function getDbInstance() {
+  if (!initialized) {
+    logger.error('❌ Models not initialized. Call initializeModels() first.');
+    throw new Error('Models not initialized');
   }
-});
+  return db;
+}
 
-// Setup global hooks
-sequelize.addHook('beforeBulkCreate', (instances, options) => {
-  logger.debug('Bulk create operation starting', {
-    model: options.model?.name,
-    count: instances?.length
-  });
-});
-
-sequelize.addHook('afterBulkCreate', (instances, options) => {
-  logger.debug('Bulk create operation completed', {
-    model: options.model?.name,
-    count: instances?.length
-  });
-});
-
-sequelize.addHook('beforeBulkUpdate', (options) => {
-  logger.debug('Bulk update operation starting', {
-    model: options.model?.name,
-    where: options.where
-  });
-});
-
-sequelize.addHook('afterBulkUpdate', (options) => {
-  logger.debug('Bulk update operation completed', {
-    model: options.model?.name,
-    where: options.where
-  });
-});
-
-// Model validation utilities
-db.validateAssociations = async () => {
-  const errors = [];
-  
-  for (const modelName of Object.keys(db)) {
-    const model = db[modelName];
-    
-    if (model.associations) {
-      for (const [assocName, association] of Object.entries(model.associations)) {
-        try {
-          // Check if target model exists
-          if (!association.target) {
-            errors.push(`${modelName}: Association '${assocName}' has no target model`);
-          }
-        } catch (error) {
-          errors.push(`${modelName}: Error in association '${assocName}': ${error.message}`);
-        }
-      }
-    }
+/**
+ * Synchronize all models with database (force or alter based on env).
+ */
+async function syncModels(options = {}) {
+  if (!sequelizeInstance) {
+    logger.error('❌ No Sequelize instance found. Call initializeModels() first.');
+    throw new Error('Sequelize not initialized');
   }
-  
-  if (errors.length > 0) {
-    logger.error('Model association validation failed', { errors });
-    return false;
-  }
-  
-  logger.info('Model association validation passed');
-  return true;
+  logger.info('🔄 Synchronizing all models with database...');
+  await sequelizeInstance.sync(options);
+  logger.info('✅ Database models synchronized successfully.');
+}
+
+module.exports = {
+  initialize: initializeModels,
+  getDbInstance,
+  sync: syncModels,
 };
-
-// Export database objects
-db.sequelize = sequelize;
-db.Sequelize = Sequelize;
-db.connectionManager = connectionManager;
-
-// Export utility functions
-db.Op = Sequelize.Op;
-db.DataTypes = DataTypes;
-
-// Model helper functions
-db.transaction = async (callback) => {
-  const t = await sequelize.transaction();
-  try {
-    const result = await callback(t);
-    await t.commit();
-    return result;
-  } catch (error) {
-    await t.rollback();
-    throw error;
-  }
-};
-
-// Sync database function
-db.sync = async (options = {}) => {
-  try {
-    logger.info('Starting database synchronization...');
-    await sequelize.sync(options);
-    logger.info('Database synchronized successfully');
-  } catch (error) {
-    logger.error('Database synchronization failed', {
-      error: error.message,
-      stack: error.stack
-    });
-    throw error;
-  }
-};
-
-module.exports = db;
