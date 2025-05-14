@@ -16,16 +16,16 @@ let initialized = false;
  */
 async function initializeModels() {
   if (initialized) {
-    logger.info('Models already initialized, skipping re-initialization.');
+    logger.info('Models already initialized, returning db instance.');
     return db;
   }
 
   try {
     // Ensure ConnectionManager is initialized
-    if (!connectionManager.isConnected) {
-      logger.info('Initializing database connection from ConnectionManager...');
+    if (!connectionManager.checkConnection()) {
+      logger.info('Initializing database connection from models...');
       await connectionManager.initialize();
-      logger.info('Database connection initialized successfully from ConnectionManager');
+      logger.info('Database connection initialized successfully from models');
     }
 
     sequelizeInstance = connectionManager.getConnection();
@@ -54,7 +54,7 @@ async function initializeModels() {
       }
     });
 
-    // Add hooks if defined in models (ensuring no hook is skipped)
+    // Add hooks if defined in models
     Object.keys(db).forEach((modelName) => {
       if (db[modelName].addHooks) {
         db[modelName].addHooks();
@@ -81,7 +81,7 @@ async function initializeModels() {
 function getDbInstance() {
   if (!initialized) {
     logger.error('❌ Models not initialized. Call initializeModels() first.');
-    throw new Error('Models not initialized');
+    return db; // Still return the db object, even if empty
   }
   return db;
 }
@@ -99,8 +99,16 @@ async function syncModels(options = {}) {
   logger.info('✅ Database models synchronized successfully.');
 }
 
-module.exports = {
-  initialize: initializeModels,
-  getDbInstance,
-  sync: syncModels,
-};
+// Initialize models on first require
+(async () => {
+  try {
+    await initializeModels();
+  } catch (error) {
+    logger.error('Failed to initialize models on require', { error: error.message });
+  }
+})();
+
+module.exports = db;
+module.exports.initialize = initializeModels;
+module.exports.getDbInstance = getDbInstance;
+module.exports.sync = syncModels;

@@ -1,9 +1,9 @@
 // middleware/authentication.js
 const jwt = require('jsonwebtoken');
-const { User } = require('../db/models');
 const logger = require('../utils/logger');
 const { validateUUID } = require('../utils/validation');
 const userSyncService = require('../services/sync/userSyncService');
+const UserService = require('../services/UserService');
 
 class AuthenticationMiddleware {
   async authenticate(req, res, next) {
@@ -82,7 +82,7 @@ class AuthenticationMiddleware {
     const externalId = tokenData.id || tokenData.userId || tokenData.sub;
     if (!validateUUID(externalId)) throw new Error('Invalid user identifier format');
 
-    let user = await User.findOne({ where: { externalId } });
+    let user = await UserService.findByExternalId(externalId);
 
     if (!user || this.shouldSyncUser(user, tokenData)) {
       const syncData = {
@@ -97,7 +97,7 @@ class AuthenticationMiddleware {
 
       try {
         const syncResult = await userSyncService.syncUserFromMainApp(syncData, token);
-        user = await User.findByPk(syncResult.user.id);
+        user = await UserService.findById(syncResult.user.id);
 
         logger.info('User synced from main app', { userId: user.id, externalId: user.externalId, requestId: req.id });
       } catch (syncError) {
@@ -209,10 +209,7 @@ class AuthenticationMiddleware {
   }
 }
 
-// Create instance
 const authMiddleware = new AuthenticationMiddleware();
-
-// Export the instance and bound methods
 module.exports = authMiddleware;
 module.exports.authenticate = authMiddleware.authenticate.bind(authMiddleware);
 module.exports.optionalAuthenticate = authMiddleware.optionalAuthenticate.bind(authMiddleware);

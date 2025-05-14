@@ -373,7 +373,7 @@ async function startServer() {
   //logger.info('✅ Swagger documentation configured', { path: '/api-docs' });
 
   // API Routes - Versioned
-  /*
+ 
   app.use('/api/v1/auth', authRoutes);
   app.use('/api/v1/users', userRoutes);
   app.use('/api/v1/conversations', conversationRoutes);
@@ -382,7 +382,7 @@ async function startServer() {
   logger.info('✅ Versioned API routes configured', { 
     routes: ['/api/v1/auth', '/api/v1/users', '/api/v1/conversations', '/api/v1/messages', '/api/v1/admin']
   });
-*/
+
   // API Routes - Legacy support
   //app.use('/api', apiRoutes);
   logger.info('✅ Legacy API routes configured', { path: '/api' });

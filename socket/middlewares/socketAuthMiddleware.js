@@ -1,44 +1,72 @@
-// /socket/middlewares/socketAuthMiddleware.js
+// socket/middlewares/socketAuthMiddleware.js
+const jwt = require('jsonwebtoken');
+const UserService = require('../../services/UserService');
+const userSyncService = require('../../services/sync/userSyncService');
 const logger = require('../../utils/logger');
-const authMiddleware = require('../../middleware/authentication');
+const { validateUUID } = require('../../utils/validation');
 
-module.exports = async (socket, next) => {
-  const socketId = socket.id;
+const socketAuthMiddleware = async (socket, next) => {
   const clientIp = socket.handshake.address;
+  const requestId = socket.id;
+  const token = socket.handshake.auth?.token;
+
+  if (!token) {
+    logger.warn(`[Socket ID: ${socket.id}] No token provided`, { clientIp });
+    return next(new Error('No token provided'));
+  }
 
   try {
-    logger.info(`[Socket ID: ${socketId}] Attempting authentication...`, {
-      clientIp,
-      headers: socket.handshake.headers,
-      auth: socket.handshake.auth,
-      query: socket.handshake.query,
-    });
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    logger.info(`[Socket ID: ${socket.id}] Token verified successfully`, { userId: decoded.id || decoded.userId, clientIp });
 
-    const authToken = socket.handshake.auth.token ||
-      socket.handshake.headers.authorization?.replace('Bearer ', '') ||
-      socket.handshake.query.token;
-
-    if (!authToken) {
-      logger.warn(`[Socket ID: ${socketId}] Authentication required but no token provided.`);
-      return next(new Error('Authentication required'));
+    const externalId = decoded.id || decoded.userId || decoded.sub;
+    if (!validateUUID(externalId)) {
+      logger.warn(`[Socket ID: ${socket.id}] Invalid user identifier format`, { externalId });
+      return next(new Error('Invalid user identifier format'));
     }
 
-    // ✅ Use cleaned verifyToken
-    const decoded = await authMiddleware.verifyToken(authToken);
-
-    // ✅ Use cleaned getOrSyncUser
-    const user = await authMiddleware.getOrSyncUser(decoded, authToken, socket.request);
+    let user = await UserService.findByExternalId(externalId);
 
     if (!user) {
-      logger.warn(`[Socket ID: ${socketId}] User not found after sync attempt.`);
-      return next(new Error('User not found'));
+      logger.warn(`[Socket ID: ${socket.id}] User not found, attempting sync`, { externalId });
+
+      const syncData = {
+        appUserId: externalId,
+        name: decoded.name || decoded.displayName,
+        email: decoded.email,
+        phone: decoded.phone,
+        avatar: decoded.avatar || decoded.picture,
+        role: decoded.role || 'client',
+        ...decoded.userData
+      };
+
+      try {
+        const syncResult = await userSyncService.syncUserFromMainApp(syncData, token);
+        user = await UserService.findById(syncResult.user.id);
+        logger.info(`[Socket ID: ${socket.id}] User synced successfully`, { userId: user.id, externalId });
+      } catch (syncError) {
+        logger.error(`[Socket ID: ${socket.id}] User sync failed`, { error: syncError, externalId });
+        return next(new Error('Failed to sync user'));
+      }
     }
 
     socket.user = user;
-    logger.info(`User ${user.id} authenticated for socket ${socket.id}`);
+    socket.token = token;
+    socket.tokenData = decoded;
+
+    logger.info(`[Socket ID: ${socket.id}] Socket authentication successful`, { userId: user.id, clientIp });
+
     next();
   } catch (error) {
-    logger.error(`[Socket ID: ${socketId}] Socket authentication error: ${error.message}`, { stack: error.stack });
-    next(new Error('Authentication failed'));
+    logger.audit('socket_authentication_failed', {
+      error: error.message,
+      code: error.code,
+      clientIp,
+      socketId: socket.id
+    });
+    logger.error(`[Socket ID: ${socket.id}] Socket authentication error: ${error.message}`, { clientIp });
+    next(new Error(error.message));
   }
 };
+
+module.exports = socketAuthMiddleware;

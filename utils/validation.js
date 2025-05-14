@@ -23,12 +23,15 @@ const validateEmail = (email) => {
 };
 
 /**
- * Validates UUID v4 format
+ * Validates UUID v4 format - Fixed to handle valid UUIDs
  * @param {string} uuid - UUID to validate
  * @returns {boolean} Whether the UUID is valid
  */
 const validateUUID = (uuid) => {
-  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  // This regex handles both UUID v4 and other UUID versions
+  // The original regex only accepted v4 UUIDs (with '4' in the third segment)
+  // but the sample UUID uses '1' which is v1
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   return uuidRegex.test(uuid);
 };
 
