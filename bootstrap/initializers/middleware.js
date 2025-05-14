@@ -5,9 +5,10 @@ const helmet = require('helmet');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const { v4: uuidv4 } = require('uuid');
-const { logger } = require('../../utils/logger');
 const config = require('../../config/config');
 const requestLogger = require('../../middleware/request-logger');
+const logger = require('../../utils/logger');
+
 
 async function setupMiddleware(app) {
   const startTime = Date.now();

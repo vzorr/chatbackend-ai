@@ -21,7 +21,6 @@ async function initializeModels() {
   }
 
   try {
-    // Ensure ConnectionManager is initialized
     if (!connectionManager.checkConnection()) {
       logger.info('Initializing database connection from models...');
       await connectionManager.initialize();
@@ -46,7 +45,6 @@ async function initializeModels() {
         logger.info(`Model loaded: ${model.name}`);
       });
 
-    // Run model associations
     Object.keys(db).forEach((modelName) => {
       if (db[modelName].associate) {
         db[modelName].associate(db);
@@ -54,7 +52,6 @@ async function initializeModels() {
       }
     });
 
-    // Add hooks if defined in models
     Object.keys(db).forEach((modelName) => {
       if (db[modelName].addHooks) {
         db[modelName].addHooks();
@@ -81,7 +78,6 @@ async function initializeModels() {
 function getDbInstance() {
   if (!initialized) {
     logger.error('❌ Models not initialized. Call initializeModels() first.');
-    return db; // Still return the db object, even if empty
   }
   return db;
 }
@@ -98,15 +94,6 @@ async function syncModels(options = {}) {
   await sequelizeInstance.sync(options);
   logger.info('✅ Database models synchronized successfully.');
 }
-
-// Initialize models on first require
-(async () => {
-  try {
-    await initializeModels();
-  } catch (error) {
-    logger.error('Failed to initialize models on require', { error: error.message });
-  }
-})();
 
 module.exports = db;
 module.exports.initialize = initializeModels;

@@ -1,47 +1,77 @@
-// db/index.js - Fixed initialization
+// db/index.js - Enterprise-grade fixed initialization preserving existing code pattern
 const connectionManager = require('./connectionManager');
+const modelsLoader = require('./models');
 const logger = require('../utils/logger');
 
-// Export the connection manager and methods
-module.exports = {
-  // Get connection - initializes if needed
-  async getConnection() {
-    if (!connectionManager.sequelize) {
-      await connectionManager.initialize();
-    }
-    return connectionManager.getConnection();
-  },
-  
-  // Connection manager
-  connectionManager,
-  
-  // Initialize connection
-  async initialize() {
-    return connectionManager.initialize();
-  }
-};
-
-// Initialize models only after connection is ready
 let modelsInitialized = false;
 
-async function initializeModels() {
-  if (modelsInitialized) return;
-  
+/**
+ * Initialize connection and models together.
+ * Ensures connection is healthy first, then initializes models.
+ * Uses existing connectionManager and modelsLoader hybrid export pattern.
+ */
+async function initialize() {
+  if (modelsInitialized) {
+    logger.info('Database and models already initialized, skipping...');
+    return;
+  }
+
   try {
+    logger.info('🔧 Initializing database connection...');
     await connectionManager.initialize();
-    const models = require('./models');
+    logger.info('✅ Database connection initialized successfully');
+
+    logger.info('📦 Initializing Sequelize models...');
+    // Always call modelsLoader.initialize() (do not call initializeModels directly)
+    await modelsLoader.initialize();
+    logger.info('✅ Sequelize models initialized successfully');
+
     modelsInitialized = true;
-    logger.info('Database module and models initialized successfully');
-  } catch (err) {
-    logger.error('Failed to initialize database module', {
-      error: err.message,
-      stack: err.stack
+    logger.info('🚀 Database and models fully initialized and verified');
+  } catch (error) {
+    logger.error('❌ Failed to initialize database and models', {
+      error: error.message,
+      stack: error.stack,
     });
-    throw err;
+    throw error;
   }
 }
 
-// Auto-initialize on first require (but don't block)
-initializeModels().catch(err => {
-  logger.error('Background model initialization failed', { error: err.message });
-});
+/**
+ * Get Sequelize models after ensuring initialized.
+ */
+function getModels() {
+  try {
+    const models = modelsLoader.getDbInstance();
+    if (!models || Object.keys(models).length === 0) {
+      throw new Error('Models not initialized or empty. Ensure initialize() is called first.');
+    }
+    return models;
+  } catch (error) {
+    logger.error('❌ Failed to get models', {
+      error: error.message,
+      stack: error.stack,
+    });
+    throw error;
+  }
+}
+
+/**
+ * Get current database connection safely.
+ * Will auto-initialize connection if not ready.
+ */
+async function getConnection() {
+  if (!connectionManager.sequelize) {
+    logger.info('🔄 Connection not found, initializing...');
+    await connectionManager.initialize();
+  } else {
+    logger.info('✅ Reusing existing database connection');
+  }
+  return connectionManager.getConnection();
+}
+
+module.exports = {
+  initialize,
+  getConnection,
+  getModels,
+};

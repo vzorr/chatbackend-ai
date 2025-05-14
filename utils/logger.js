@@ -8,6 +8,7 @@ class EnterpriseLogger {
   constructor() {
     this.logger = this.createLogger();
     this.contextMap = new Map();
+    this.defaultContext = {};
   }
 
   createLogger() {
@@ -18,16 +19,17 @@ class EnterpriseLogger {
       winston.format.json(),
       winston.format.printf(info => {
         const { timestamp, level, message, ...meta } = info;
-        const context = this.contextMap.get(process.pid) || {};
+        // Get context for current request/process
+        const currentContext = this.getCurrentContext();
         return JSON.stringify({
           timestamp,
           level,
           message,
-          ...context,
+          ...currentContext,
           ...meta,
-          environment: config.app.environment,
-          service: config.app.name,
-          version: config.app.version
+          environment: process.env.NODE_ENV || 'development',
+          service: 'vortexhive-chat',
+          version: process.env.npm_package_version || '1.0.0'
         });
       })
     );
@@ -35,7 +37,7 @@ class EnterpriseLogger {
     const transports = [];
 
     // Console transport for non-production environments
-    if (config.app.environment !== 'production') {
+    if ((process.env.NODE_ENV || 'development') !== 'production') {
       transports.push(new winston.transports.Console({
         format: winston.format.combine(
           winston.format.colorize(),
@@ -50,8 +52,8 @@ class EnterpriseLogger {
       datePattern: 'YYYY-MM-DD',
       zippedArchive: true,
       maxSize: '20m',
-      maxFiles: `${config.logging.retention.days}d`,
-      level: config.logging.level
+      maxFiles: `${config.logging?.retention?.days || 30}d`,
+      level: config.logging?.level || 'info'
     }));
 
     transports.push(new DailyRotateFile({
@@ -59,14 +61,14 @@ class EnterpriseLogger {
       datePattern: 'YYYY-MM-DD',
       zippedArchive: true,
       maxSize: '20m',
-      maxFiles: `${config.logging.retention.days}d`,
+      maxFiles: `${config.logging?.retention?.days || 30}d`,
       level: 'error'
     }));
 
     // Optional Elasticsearch transport
-    if (config.logging.elasticsearch.enabled && config.logging.elasticsearch.url) {
+    if (config.logging?.elasticsearch?.enabled && config.logging?.elasticsearch?.url) {
       transports.push(new ElasticsearchTransport({
-        level: config.logging.level,
+        level: config.logging?.level || 'info',
         clientOpts: {
           node: config.logging.elasticsearch.url,
           auth: config.logging.elasticsearch.user ? {
@@ -74,16 +76,16 @@ class EnterpriseLogger {
             password: config.logging.elasticsearch.password
           } : undefined,
           tls: {
-            rejectUnauthorized: false // Optional: make this configurable if needed
+            rejectUnauthorized: false
           }
         },
-        indexPrefix: config.logging.elasticsearch.indexPrefix || 'chat-server-logs',
+        indexPrefix: config.logging?.elasticsearch?.indexPrefix || 'chat-server-logs',
         dataStream: true
       }));
     }
 
     return winston.createLogger({
-      level: config.logging.level,
+      level: config.logging?.level || 'info',
       format,
       transports,
       exceptionHandlers: [
@@ -95,16 +97,37 @@ class EnterpriseLogger {
     });
   }
 
-  // Context management
+  // Context management - fixed implementation
   setContext(context) {
-    this.contextMap.set(process.pid, {
-      ...this.contextMap.get(process.pid),
+    // Store context for the current async context or process
+    const contextKey = this.getContextKey();
+    const existingContext = this.contextMap.get(contextKey) || {};
+    this.contextMap.set(contextKey, {
+      ...existingContext,
       ...context
     });
   }
 
   clearContext() {
-    this.contextMap.delete(process.pid);
+    const contextKey = this.getContextKey();
+    this.contextMap.delete(contextKey);
+  }
+
+  // Get the current context
+  getCurrentContext() {
+    const contextKey = this.getContextKey();
+    return this.contextMap.get(contextKey) || this.defaultContext;
+  }
+
+  // Get context key - could be request ID, process ID, or async context
+  getContextKey() {
+    // If we have AsyncLocalStorage available (Node.js 12.17.0+), use it
+    // Otherwise fall back to process ID
+    if (global.asyncLocalStorage && global.asyncLocalStorage.getStore()) {
+      const store = global.asyncLocalStorage.getStore();
+      return store.contextId || process.pid;
+    }
+    return process.pid;
   }
 
   // Logging methods

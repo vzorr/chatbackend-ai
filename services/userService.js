@@ -7,7 +7,16 @@ class UserService {
    * Always safely get the User model.
    */
   getModel() {
-    return db.User;
+    try {
+      const models = db.getModels();
+      if (!models.User) {
+        throw new Error('User model not found');
+      }
+      return models.User;
+    } catch (error) {
+      logger.error('UserService: Models not initialized or User model missing', { error: error.message });
+      throw error;
+    }
   }
 
   /**

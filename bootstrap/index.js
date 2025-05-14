@@ -16,7 +16,7 @@ const { setupGracefulShutdown } = require('./initializers/shutdown');
 const { initializeCluster } = require('./initializers/cluster');
 const { initializeMetrics } = require('./initializers/metrics');
 const { logEnvironmentInfo } = require('./initializers/environment-info');
-
+const { initializeModels } = require('./initializers/models');
 class Bootstrap {
   constructor() {
     this.app = null;
@@ -169,6 +169,11 @@ class Bootstrap {
       await initializeDatabase();
       logger.info('✅ Database initialized');
       
+      logger.info('💾 Initializing database models...');
+      await initializeModels(); // Initialize database + models
+
+      logger.info('✅ Database models initialized');
+
       logger.info('🛠️ Initializing services...');
       await initializeServices();
       logger.info('✅ Services initialized');
