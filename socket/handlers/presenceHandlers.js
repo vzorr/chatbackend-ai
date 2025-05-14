@@ -2,7 +2,7 @@
 const logger = require('../../utils/logger');
 const presenceService = require('../../services/socket/presenceService');
 const redisService = require('../../services/redis');
-const { User } = require('../../db/models');
+const db = require('../../db');
 
 module.exports = (io, socket) => {
   const userId = socket.user.id;
@@ -47,6 +47,14 @@ module.exports = (io, socket) => {
       const uncachedUsers = userIds.filter(id => !presenceMap[id]);
       
       if (uncachedUsers.length > 0) {
+        const models = db.getModels();
+        const User = models.User;
+        
+        if (!User) {
+          logger.error('User model not found in database models');
+          throw new Error('User model not available');
+        }
+        
         const users = await User.findAll({
           where: { id: uncachedUsers },
           attributes: ['id', 'isOnline', 'lastSeen']
@@ -205,6 +213,13 @@ module.exports = (io, socket) => {
   // Handle last seen update on activity
   socket.on('update_last_seen', async () => {
     try {
+      const models = db.getModels();
+      const User = models.User;
+      
+      if (!User) {
+        throw new Error('User model not available');
+      }
+      
       await User.update(
         { lastSeen: new Date() },
         { where: { id: userId } }
@@ -228,6 +243,13 @@ module.exports = (io, socket) => {
   // Handle invisible mode
   socket.on('set_invisible_mode', async ({ enabled }) => {
     try {
+      const models = db.getModels();
+      const User = models.User;
+      
+      if (!User) {
+        throw new Error('User model not available');
+      }
+      
       const user = await User.findByPk(userId);
       
       if (!user) {

@@ -1,4 +1,4 @@
-// /socket/handlers/connectionHandler.js
+// socket/handlers/connectionHandlers.js
 const logger = require('../../utils/logger');
 const presenceService = require('../../services/socket/presenceService');
 const conversationService = require('../../services/socket/conversationService');
@@ -40,7 +40,11 @@ module.exports = (io, socket) => {
         timestamp: Date.now()
       });
     } catch (error) {
-      logger.error(`Error during socket connection: ${error}`);
+      logger.error(`Error during socket connection: ${error.message}`, {
+        error: error.stack,
+        userId,
+        socketId
+      });
     }
   })();
 
@@ -54,7 +58,11 @@ module.exports = (io, socket) => {
         serverTime: new Date().toISOString()
       });
     } catch (error) {
-      logger.error(`Error handling connection_status: ${error}`);
+      logger.error(`Error handling connection_status: ${error.message}`, {
+        error: error.stack,
+        userId,
+        socketId
+      });
     }
   });
 
@@ -75,7 +83,11 @@ module.exports = (io, socket) => {
 
       logger.info(`User ${userId} disconnected from socket ${socketId}`);
     } catch (error) {
-      logger.error(`Error during socket disconnection: ${error}`);
+      logger.error(`Error during socket disconnection: ${error.message}`, {
+        error: error.stack,
+        userId,
+        socketId
+      });
     }
   });
 };

@@ -1,9 +1,26 @@
 // /services/socket/userService.js
-const { User } = require('../../db/models');
+const db = require('../../db');
+const logger = require('../../utils/logger');
 
 class UserService {
   async findById(userId) {
-    return User.findByPk(userId);
+    try {
+      const models = db.getModels();
+      const User = models.User;
+      
+      if (!User) {
+        logger.error('User model not found in database models');
+        throw new Error('User model not available');
+      }
+      
+      return User.findByPk(userId);
+    } catch (error) {
+      logger.error(`Error finding user by ID: ${error.message}`, {
+        userId,
+        error: error.stack
+      });
+      throw error;
+    }
   }
 }
 

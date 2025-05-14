@@ -277,20 +277,19 @@ const getConversationMessages = async (conversationId, limit = 50, offset = 0) =
   return messages;
 };
 
-
+// Fixed - removed "this." references
 const isUserStillOnline = async (userId) => {
-  const presence = await this.getUserPresence(userId);
+  const presence = await getUserPresence(userId);
   return presence && presence.isOnline;
 }
 
 const updateUserPresence = async (userId, isOnline, socketId = null) => {
   if (isOnline) {
-    return await this.setUserOnline(userId, socketId);
+    return await setUserOnline(userId, socketId);
   } else {
-    return await this.setUserOffline(userId);
+    return await setUserOffline(userId);
   }
 }
-
 
 // Typing indicator functions
 const setUserTyping = async (userId, conversationId) => {
@@ -356,7 +355,6 @@ const ping = async () => {
     return false;
   }
 };
-
 
 module.exports = {
   redisClient,
