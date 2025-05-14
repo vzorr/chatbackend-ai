@@ -1,8 +1,9 @@
-// socket/socketInitializer.js
+// socket/socketInitializer-fixed.js
 const { createAdapter } = require('@socket.io/redis-adapter');
-
 const Redis = require('ioredis');
 const logger = require('../utils/logger');
+
+// Import handlers
 const socketAuthMiddleware = require('./middlewares/socketAuthMiddleware');
 const connectionHandler = require('./handlers/connectionHandlers');
 const messageHandlers = require('./handlers/messageHandlers');
@@ -14,35 +15,82 @@ module.exports = async (io) => {
   
   // Setup Redis adapter if configured
   if (process.env.REDIS_HOST) {
-    const redisConfig = {
-      host: process.env.REDIS_HOST,
-      port: process.env.REDIS_PORT || 6379,
-      password: process.env.REDIS_PASSWORD || undefined
-    };
-
     try {
-      const pubClient = new Redis(redisConfig);
-      const subClient = new Redis(redisConfig);
+      logger.info('🔌 Setting up Redis adapter for Socket.IO...');
       
-      io.adapter(createAdapter({
-        pubClient,
-        subClient
-      }));
+      const redisOptions = {
+        host: process.env.REDIS_HOST,
+        port: parseInt(process.env.REDIS_PORT || '6379', 10),
+        password: process.env.REDIS_PASSWORD || undefined,
+        retryStrategy: (times) => {
+          if (times > 3) {
+            logger.error('Redis connection retries exceeded');
+            return null;
+          }
+          return Math.min(times * 200, 2000);
+        }
+      };
 
-      logger.info('✅ Socket.IO Redis adapter connected', {
-        host: redisConfig.host,
-        port: redisConfig.port
+      // Create clients
+      const pubClient = new Redis(redisOptions);
+      const subClient = new Redis(redisOptions);
+      
+      // Wait for both clients to be ready
+      await Promise.all([
+        new Promise((resolve, reject) => {
+          pubClient.once('ready', () => {
+            logger.info('✅ Redis pub client ready');
+            resolve();
+          });
+          pubClient.once('error', reject);
+        }),
+        new Promise((resolve, reject) => {
+          subClient.once('ready', () => {
+            logger.info('✅ Redis sub client ready');
+            resolve();
+          });
+          subClient.once('error', reject);
+        })
+      ]);
+      
+      // Create and set the adapter
+      const adapter = createAdapter(pubClient, subClient);
+      io.adapter(adapter);
+      
+      logger.info('✅ Socket.IO Redis adapter initialized successfully', {
+        host: redisOptions.host,
+        port: redisOptions.port
       });
+      
+      // Set up error handlers for ongoing operation
+      pubClient.on('error', (err) => {
+        logger.error('❌ Redis pub client error', { 
+          error: err.message,
+          code: err.code 
+        });
+      });
+      
+      subClient.on('error', (err) => {
+        logger.error('❌ Redis sub client error', { 
+          error: err.message,
+          code: err.code 
+        });
+      });
+      
     } catch (error) {
-      logger.error('❌ Failed to connect Socket.IO to Redis', {
-        error: error.message
+      logger.error('❌ Failed to initialize Socket.IO Redis adapter', {
+        error: error.message,
+        stack: error.stack,
+        code: error.code
       });
-      logger.info('⚠️ Socket.IO will use in-memory adapter');
+      logger.info('⚠️ Falling back to in-memory adapter');
     }
   } else {
-    logger.info('ℹ️ Socket.IO using in-memory adapter (no Redis configured)');
+    logger.info('ℹ️ No Redis host configured, using in-memory adapter');
   }
 
+  // Continue with the rest of your socket initialization...
+  
   // Attach authentication middleware
   io.use(socketAuthMiddleware);
   logger.info('✅ Socket.IO authentication middleware attached');

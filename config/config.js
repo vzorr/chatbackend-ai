@@ -1,27 +1,33 @@
-// config/app.js
+// config/config.js
 module.exports = {
 
-  app:{
-        environment: process.env.APP_ENVIRONMENT || 'development',
+  app: {
+    environment: process.env.APP_ENVIRONMENT || 'development',
+    url: process.env.APP_URL || 'http://localhost:3001',
+    baseUrl: process.env.API_BASE_URL || 'http://localhost:3001'
   },
+  
   // Server Configuration
   server: {
-    port: process.env.PORT || 3001,
+    port: parseInt(process.env.SERVER_PORT || process.env.PORT || '3001'),
     host: process.env.HOST || '0.0.0.0',
     nodeEnv: process.env.NODE_ENV || 'development',
     corsOrigin: process.env.CORS_ORIGIN || '*',
-    socketPath: process.env.SOCKET_PATH || '/socket.io'
+    socketPath: process.env.SOCKET_PATH || '/socket.io',
+    socketUrl: process.env.SOCKET_URL || 'http://localhost:5000'
   },
 
   // Database Configuration
   database: {
     host: process.env.DB_HOST || 'localhost',
-    port: process.env.DB_PORT || 5432,
+    port: parseInt(process.env.DB_PORT || '5432'),
     name: process.env.DB_NAME || 'chatserver',
     user: process.env.DB_USER || 'postgres',
     password: process.env.DB_PASS || '',
-    dialect: 'postgres',
+    dialect: process.env.DB_DIALECT || 'postgres',
     logging: process.env.DB_LOGGING === 'true',
+    alter: process.env.DB_ALTER === 'true',
+    queryTimeout: parseInt(process.env.DB_QUERY_TIMEOUT || '30000'),
     pool: {
       max: parseInt(process.env.DB_POOL_MAX || '10'),
       min: parseInt(process.env.DB_POOL_MIN || '2'),
@@ -33,9 +39,10 @@ module.exports = {
   // Redis Configuration
   redis: {
     host: process.env.REDIS_HOST || 'localhost',
-    port: process.env.REDIS_PORT || 6379,
+    port: parseInt(process.env.REDIS_PORT || '6379'),
     password: process.env.REDIS_PASSWORD || undefined,
     db: parseInt(process.env.REDIS_DB || '0'),
+    url: process.env.REDIS_URL || undefined,
     retryStrategy: (times) => {
       if (times > 10) return null;
       return Math.min(times * 100, 3000);
@@ -50,6 +57,14 @@ module.exports = {
     jwtRefreshExpiry: process.env.JWT_REFRESH_EXPIRY || '90d',
     validApiKeys: (process.env.VALID_API_KEYS || '').split(',').filter(k => k),
     syncSecretKey: process.env.SYNC_SECRET_KEY
+  },
+
+  // External OAuth
+  oauth: {
+    google: {
+      clientId: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET
+    }
   },
 
   // Push Notifications
@@ -95,8 +110,8 @@ module.exports = {
     elasticsearch: {
       enabled: !!process.env.ELASTICSEARCH_URL,
       url: process.env.ELASTICSEARCH_URL,
-      user: process.env.ELASTICSEARCH_USER,
-      password: process.env.ELASTICSEARCH_PASSWORD
+      user: process.env.ELASTICSEARCH_USER || '',
+      password: process.env.ELASTICSEARCH_PASSWORD || ''
     },
     retention: {
       days: parseInt(process.env.LOG_RETENTION_DAYS || '30')
@@ -105,9 +120,18 @@ module.exports = {
 
   // Rate Limiting
   rateLimiting: {
-    windowMs: parseInt(process.env.RATE_LIMIT_WINDOW || '900000'), // 15 minutes
-    max: parseInt(process.env.RATE_LIMIT_MAX || '1000'),
-    skipSuccessfulRequests: false
+    windowMs: parseInt(process.env.RATE_LIMIT_WINDOW || '60000'), // 1 minute
+    max: parseInt(process.env.RATE_LIMIT_MAX || '100'),
+    skipSuccessfulRequests: false,
+    api: {
+      max: parseInt(process.env.API_RATE_LIMIT_MAX || '1000')
+    },
+    auth: {
+      max: parseInt(process.env.AUTH_RATE_LIMIT_MAX || '5')
+    },
+    upload: {
+      max: parseInt(process.env.UPLOAD_RATE_LIMIT_MAX || '10')
+    }
   },
 
   // Sync Configuration
@@ -145,6 +169,10 @@ module.exports = {
       enabled: !!process.env.APM_SERVER_URL,
       serverUrl: process.env.APM_SERVER_URL,
       serviceName: process.env.APM_SERVICE_NAME || 'chat-server'
+    },
+    sentry: {
+      enabled: !!process.env.SENTRY_DSN,
+      dsn: process.env.SENTRY_DSN
     }
   },
 
@@ -186,7 +214,24 @@ module.exports = {
     breakerReset: parseInt(process.env.WORKER_BREAKER_RESET || '30000'),
   },
 
+  // External Services
+  externalServices: {
+    openaiApiKey: process.env.OPENAI_API_KEY,
+    virusScanApiKey: process.env.VIRUS_SCAN_API_KEY,
+    smsFallbackApiKey: process.env.SMS_FALLBACK_API_KEY,
+    analyticsApiKey: process.env.ANALYTICS_API_KEY
+  },
 
+  // Performance
+  performance: {
+    socketConnectionLimit: parseInt(process.env.SOCKET_CONNECTION_LIMIT || '10000'),
+    messageBatchSize: parseInt(process.env.MESSAGE_BATCH_SIZE || '100'),
+    notificationBatchSize: parseInt(process.env.NOTIFICATION_BATCH_SIZE || '500'),
+    cacheTTL: parseInt(process.env.CACHE_TTL || '3600')
+  },
 
-
+  // Webhooks (if you add them later)
+  webhooks: {
+    enabled: process.env.WEBHOOKS_ENABLED === 'true'
+  }
 };
