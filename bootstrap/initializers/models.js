@@ -6,11 +6,18 @@ async function initializeModels() {
   logger.info('📦 [Models] Starting database connection and Sequelize models initialization...');
 
   try {
+
+      // Ensure models are loaded before proceeding
+      
+      await db.waitForInitialization();
+      const models = db.getModels();
+      logger.info('✅ Verified models are loaded:', Object.keys(models).filter(k => k !== 'sequelize' && k !== 'Sequelize'));
+
     // Step 1: Initialize connection + models
     await db.initialize();
 
     // Step 2: Validate loaded models explicitly
-    const models = db.getModels();
+    // const models = db.getModels();
     const modelNames = Object.keys(models).filter(name => name !== 'sequelize' && name !== 'Sequelize');
 
     if (modelNames.length === 0) {

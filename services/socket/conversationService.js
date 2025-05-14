@@ -3,8 +3,18 @@ const db = require('../../db');
 const logger = require('../../utils/logger');
 
 class ConversationService {
+  async ensureDbInitialized() {
+    if (!db.isInitialized()) {
+      logger.info('Database not initialized, waiting...');
+      await db.waitForInitialization();
+    }
+  }
+
   async getUserConversationIds(userId) {
     try {
+      // Ensure DB is initialized
+      await this.ensureDbInitialized();
+      
       const models = db.getModels();
       const ConversationParticipant = models.ConversationParticipant;
       

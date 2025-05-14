@@ -1,15 +1,23 @@
 // services/notifications/notificationManager.js
 const fcmService = require('./fcm');
 const apnService = require('./apn');
-const { DeviceToken, TokenHistory, User, Message } = require('../../db/models');
+const { v4: uuidv4 } = require('uuid');
+const { Op } = require('sequelize');
 const logger = require('../../utils/logger');
 const queueService = require('../queue/queueService');
-const { Op } = require('sequelize');
+const db = require('../../db');
 
 class NotificationManager {
   constructor() {
     this.initialized = false;
     this.providers = new Map();
+  }
+
+  async ensureDbInitialized() {
+    if (!db.isInitialized()) {
+      logger.info('NotificationManager: Database not initialized, waiting...');
+      await db.waitForInitialization();
+    }
   }
 
   async initialize() {
@@ -44,7 +52,7 @@ class NotificationManager {
    * Send notification to a specific user
    */
   async sendNotification(userId, notification) {
-    const operationId = require('uuid').v4();
+    const operationId = uuidv4();
     
     logger.info('Sending notification to user', {
       operationId,
@@ -53,6 +61,15 @@ class NotificationManager {
     });
 
     try {
+      // Ensure DB is initialized
+      await this.ensureDbInitialized();
+      const models = db.getModels();
+      const { DeviceToken } = models;
+
+      if (!DeviceToken) {
+        throw new Error('DeviceToken model not available');
+      }
+
       // Get user's active device tokens
       const deviceTokens = await DeviceToken.findAll({
         where: {
@@ -124,6 +141,15 @@ class NotificationManager {
     }
 
     try {
+      // Ensure DB is initialized
+      await this.ensureDbInitialized();
+      const models = db.getModels();
+      const { TokenHistory } = models;
+
+      if (!TokenHistory) {
+        throw new Error('TokenHistory model not available');
+      }
+
       // Prepare notification payload
       const payload = this.preparePayload(notification, platform);
       
@@ -155,14 +181,21 @@ class NotificationManager {
       return result;
 
     } catch (error) {
-      // Log failure
-      await TokenHistory.logTokenFailure({
-        userId: deviceToken.userId,
-        token,
-        tokenType: platform === 'ios' ? 'APN' : 'FCM',
-        deviceId,
-        error
-      });
+      // Ensure DB is initialized
+      await this.ensureDbInitialized();
+      const models = db.getModels();
+      const { TokenHistory } = models;
+
+      if (TokenHistory) {
+        // Log failure
+        await TokenHistory.logTokenFailure({
+          userId: deviceToken.userId,
+          token,
+          tokenType: platform === 'ios' ? 'APN' : 'FCM',
+          deviceId,
+          error
+        });
+      }
 
       // Handle invalid token
       if (this.isInvalidTokenError(error)) {
@@ -177,46 +210,67 @@ class NotificationManager {
    * Send message notification
    */
   async sendMessageNotification(message, recipients) {
-    const sender = await User.findByPk(message.senderId);
-    
-    const notification = {
-      type: 'new_message',
-      title: `New message from ${sender.name}`,
-      body: this.truncateMessage(message.content.text || 'New message'),
-      data: {
-        messageId: message.id,
-        conversationId: message.conversationId,
-        senderId: message.senderId,
-        senderName: sender.name,
-        type: 'chat_message'
+    try {
+      // Ensure DB is initialized
+      await this.ensureDbInitialized();
+      const models = db.getModels();
+      const { User } = models;
+      
+      if (!User) {
+        throw new Error('User model not available');
       }
-    };
-
-    const results = [];
-
-    for (const recipientId of recipients) {
-      try {
-        const result = await this.sendNotification(recipientId, notification);
-        results.push({
-          recipientId,
-          success: result.success,
-          operationId: result.operationId
-        });
-      } catch (error) {
-        logger.error('Failed to send message notification', {
-          recipientId,
+      
+      const sender = await User.findByPk(message.senderId);
+      
+      if (!sender) {
+        throw new Error('Sender not found');
+      }
+      
+      const notification = {
+        type: 'new_message',
+        title: `New message from ${sender.name}`,
+        body: this.truncateMessage(message.content.text || 'New message'),
+        data: {
           messageId: message.id,
-          error: error.message
-        });
-        results.push({
-          recipientId,
-          success: false,
-          error: error.message
-        });
-      }
-    }
+          conversationId: message.conversationId,
+          senderId: message.senderId,
+          senderName: sender.name,
+          type: 'chat_message'
+        }
+      };
 
-    return results;
+      const results = [];
+
+      for (const recipientId of recipients) {
+        try {
+          const result = await this.sendNotification(recipientId, notification);
+          results.push({
+            recipientId,
+            success: result.success,
+            operationId: result.operationId
+          });
+        } catch (error) {
+          logger.error('Failed to send message notification', {
+            recipientId,
+            messageId: message.id,
+            error: error.message
+          });
+          results.push({
+            recipientId,
+            success: false,
+            error: error.message
+          });
+        }
+      }
+
+      return results;
+    } catch (error) {
+      logger.error('Failed to send message notification', {
+        messageId: message.id,
+        error: error.message
+      });
+      throw error;
+    }
   }
 
   /**
@@ -229,17 +283,31 @@ class NotificationManager {
       error: error.message
     });
 
-    // Mark token as inactive
-    await deviceToken.update({ active: false });
+    try {
+      // Ensure DB is initialized
+      await this.ensureDbInitialized();
+      const models = db.getModels();
+      const { TokenHistory } = models;
 
-    // Log revocation
-    await TokenHistory.logTokenRevocation({
-      userId: deviceToken.userId,
-      token: deviceToken.token,
-      tokenType: deviceToken.platform === 'ios' ? 'APN' : 'FCM',
-      reason: 'invalid_token',
-      revokedBy: 'system'
-    });
+      // Mark token as inactive
+      await deviceToken.update({ active: false });
+
+      // Log revocation if TokenHistory is available
+      if (TokenHistory && TokenHistory.logTokenRevocation) {
+        await TokenHistory.logTokenRevocation({
+          userId: deviceToken.userId,
+          token: deviceToken.token,
+          tokenType: deviceToken.platform === 'ios' ? 'APN' : 'FCM',
+          reason: 'invalid_token',
+          revokedBy: 'system'
+        });
+      }
+    } catch (dbError) {
+      logger.error('Failed to handle invalid token', {
+        tokenId: deviceToken.id,
+        error: dbError.message
+      });
+    }
   }
 
   /**
@@ -344,40 +412,56 @@ class NotificationManager {
    * Clean up expired tokens
    */
   async cleanupExpiredTokens() {
-    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    
-    const expiredTokens = await DeviceToken.findAll({
-      where: {
-        lastUsed: {
-          [Op.lt]: thirtyDaysAgo
-        },
-        active: true
+    try {
+      // Ensure DB is initialized
+      await this.ensureDbInitialized();
+      const models = db.getModels();
+      const { DeviceToken } = models;
+
+      if (!DeviceToken) {
+        throw new Error('DeviceToken model not available');
       }
-    });
 
-    logger.info('Cleaning up expired tokens', {
-      count: expiredTokens.length
-    });
-
-    for (const token of expiredTokens) {
-      await this.handleInvalidToken(token, { 
-        message: 'Token expired due to inactivity' 
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      
+      const expiredTokens = await DeviceToken.findAll({
+        where: {
+          lastUsed: {
+            [Op.lt]: thirtyDaysAgo
+          },
+          active: true
+        }
       });
+
+      logger.info('Cleaning up expired tokens', {
+        count: expiredTokens.length
+      });
+
+      for (const token of expiredTokens) {
+        await this.handleInvalidToken(token, { 
+          message: 'Token expired due to inactivity' 
+        });
+      }
+
+      return expiredTokens.length;
+    } catch (error) {
+      logger.error('Failed to cleanup expired tokens', {
+        error: error.message
+      });
+      throw error;
     }
-
-    return expiredTokens.length;
   }
 
-  
-// Add to notificationManager.js:
- async shutdown(){
-  if (this.providers.has('APN')) {
-    await apnService.shutdown();
+  /**
+   * Shutdown notification manager
+   */
+  async shutdown() {
+    if (this.providers.has('APN')) {
+      await apnService.shutdown();
+    }
+    // Any other cleanup
+    logger.info('Notification manager shut down');
   }
 }
-  // Any other cleanup
-}
-
-
 
 module.exports = new NotificationManager();

@@ -23,6 +23,10 @@ class MessageService {
       const models = db.getModels();
       const { Message, MessageVersion, Conversation, ConversationParticipant } = models;
 
+      if (!Message || !Conversation || !ConversationParticipant) {
+        throw new Error('Required models not initialized');
+      }
+
       // Determine conversation or create one
       if (!targetConversationId && receiverId) {
         targetConversationId = await this.ensureDirectConversation(userId, receiverId);
@@ -96,6 +100,10 @@ class MessageService {
       const models = db.getModels();
       const { Conversation, ConversationParticipant } = models;
 
+      if (!Conversation || !ConversationParticipant) {
+        throw new Error('Required models not initialized');
+      }
+
       const conversations = await Conversation.findAll({
         where: { participantIds: { [Op.contains]: [userId, receiverId] } }
       });
@@ -139,6 +147,10 @@ class MessageService {
       const models = db.getModels();
       const { ConversationParticipant } = models;
 
+      if (!ConversationParticipant) {
+        throw new Error('ConversationParticipant model not initialized');
+      }
+
       const participants = await ConversationParticipant.findAll({
         where: { conversationId, userId: { [Op.ne]: excludeUserId } }
       });
@@ -158,6 +170,10 @@ class MessageService {
     try {
       const models = db.getModels();
       const { Message, ConversationParticipant } = models;
+
+      if (!Message || !ConversationParticipant) {
+        throw new Error('Required models not initialized');
+      }
 
       if (!messageIds?.length && conversationId) {
         const messages = await Message.findAll({ 
@@ -194,6 +210,10 @@ class MessageService {
     try {
       const models = db.getModels();
       const { Message, MessageVersion } = models;
+
+      if (!Message || !MessageVersion) {
+        throw new Error('Required models not initialized');
+      }
 
       const message = await Message.findOne({ 
         where: { id: messageId, senderId: userId } 
@@ -240,6 +260,10 @@ class MessageService {
     try {
       const models = db.getModels();
       const { Message } = models;
+
+      if (!Message) {
+        throw new Error('Message model not initialized');
+      }
 
       const message = await Message.findOne({ 
         where: { id: messageId, senderId: userId } 

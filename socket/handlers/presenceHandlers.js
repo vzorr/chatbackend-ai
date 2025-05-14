@@ -3,9 +3,18 @@ const logger = require('../../utils/logger');
 const presenceService = require('../../services/socket/presenceService');
 const redisService = require('../../services/redis');
 const db = require('../../db');
+const { Op } = require('sequelize');
 
 module.exports = (io, socket) => {
   const userId = socket.user.id;
+
+  // Helper function to ensure DB is initialized
+  async function ensureDbInitialized() {
+    if (!db.isInitialized()) {
+      logger.info('Database not initialized in presence handler, waiting...');
+      await db.waitForInitialization();
+    }
+  }
 
   // Handle manual presence updates from client
   socket.on('set_presence', async ({ status }) => {
@@ -47,6 +56,9 @@ module.exports = (io, socket) => {
       const uncachedUsers = userIds.filter(id => !presenceMap[id]);
       
       if (uncachedUsers.length > 0) {
+        // Ensure DB is initialized
+        await ensureDbInitialized();
+        
         const models = db.getModels();
         const User = models.User;
         
@@ -56,7 +68,7 @@ module.exports = (io, socket) => {
         }
         
         const users = await User.findAll({
-          where: { id: uncachedUsers },
+          where: { id: { [Op.in]: uncachedUsers } },
           attributes: ['id', 'isOnline', 'lastSeen']
         });
         
@@ -213,6 +225,9 @@ module.exports = (io, socket) => {
   // Handle last seen update on activity
   socket.on('update_last_seen', async () => {
     try {
+      // Ensure DB is initialized
+      await ensureDbInitialized();
+      
       const models = db.getModels();
       const User = models.User;
       
@@ -243,6 +258,9 @@ module.exports = (io, socket) => {
   // Handle invisible mode
   socket.on('set_invisible_mode', async ({ enabled }) => {
     try {
+      // Ensure DB is initialized
+      await ensureDbInitialized();
+      
       const models = db.getModels();
       const User = models.User;
       
