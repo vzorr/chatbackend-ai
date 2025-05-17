@@ -2,7 +2,7 @@
 const winston = require('winston');
 const DailyRotateFile = require('winston-daily-rotate-file');
 const { ElasticsearchTransport } = require('winston-elasticsearch');
-const config = require('../config/config');
+const config = require('../');
 
 class EnterpriseLogger {
   constructor() {

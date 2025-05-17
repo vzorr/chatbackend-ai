@@ -174,6 +174,8 @@ class Bootstrap {
 
       logger.info('✅ Database models initialized');
 
+    
+
       logger.info('🛠️ Initializing services...');
       await initializeServices();
       logger.info('✅ Services initialized');

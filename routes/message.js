@@ -1691,4 +1691,37 @@ router.get('/stats', authenticate, async (req, res, next) => {
   }
 });
 
+// Add to routes/message.js
+router.get('/history/user/:userId', authenticate, async (req, res, next) => {
+  try {
+    const { userId: otherUserId } = req.params;
+    const currentUserId = req.user.id;
+    
+    // Find or create conversation
+    const conversations = await Conversation.findAll({
+      where: {
+        participantIds: {
+          [Op.contains]: [currentUserId, otherUserId]
+        }
+      }
+    });
+    
+    const directConversation = conversations.find(c => 
+      c.participantIds.length === 2 && 
+      c.participantIds.includes(currentUserId) && 
+      c.participantIds.includes(otherUserId)
+    );
+    
+    if (!directConversation) {
+      return res.json({ success: true, messages: [], conversationId: null });
+    }
+    
+    // Use existing /messages/conversation/:conversationId logic
+    req.params.conversationId = directConversation.id;
+    return module.exports['/conversation/:conversationId'](req, res, next);
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

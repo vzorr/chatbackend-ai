@@ -17,6 +17,13 @@ module.exports = (io, socket) => {
 
       logger.info(`User ${userId} connected with socket ${socketId}`);
 
+      socket.emit('initial_data', {
+        userId,
+        conversations: await conversationService.getUserConversations(userId),
+        unreadCounts: await redisService.getUnreadCounts(userId),
+        onlineUsers: await redisService.getOnlineUsers() // if needed
+      });
+      
       io.emit('user_online', {
         id: userId,
         name: userName,

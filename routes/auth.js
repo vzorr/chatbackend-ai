@@ -11,14 +11,38 @@ const exceptionHandler = require('../middleware/exceptionHandler');
 const userSyncService = require('../services/sync/userSyncService');
 const notificationManager = require('../services/notifications/notificationManager');
 
+// Debug route to verify router is working
+router.get('/test', (req, res) => {
+  logger.info('Test route hit: /api/v1/auth/test');
+  res.json({ 
+    success: true, 
+    message: 'Auth routes are working', 
+    path: req.path,
+    baseUrl: req.baseUrl,
+    originalUrl: req.originalUrl,
+    route: req.route.path
+  });
+});
+
 /**
  * @route POST /api/v1/auth/sync
  * @desc Sync user from main application
  * @access Service-to-Service (API Key)
  */
 router.post('/sync', 
+  (req, res, next) => {
+    logger.info('Route hit: /api/v1/auth/sync', {
+      method: req.method,
+      path: req.path,
+      baseUrl: req.baseUrl,
+      originalUrl: req.originalUrl,
+      headers: Object.keys(req.headers)
+    });
+    next();
+  },
   authMiddleware.authenticateApiKey.bind(authMiddleware),
   exceptionHandler.asyncHandler(async (req, res) => {
+    logger.info('API Key authentication passed for /sync route');
     const { userData, authToken, signature } = req.body;
     
     // Validate request signature
@@ -45,8 +69,18 @@ router.post('/sync',
  * @access Service-to-Service (API Key)
  */
 router.post('/batch-sync',
+  (req, res, next) => {
+    logger.info('Route hit: /api/v1/auth/batch-sync', {
+      method: req.method,
+      path: req.path,
+      baseUrl: req.baseUrl,
+      originalUrl: req.originalUrl
+    });
+    next();
+  },
   authMiddleware.authenticateApiKey.bind(authMiddleware),
   exceptionHandler.asyncHandler(async (req, res) => {
+    logger.info('API Key authentication passed for /batch-sync route');
     const { users, authToken } = req.body;
     
     if (!Array.isArray(users) || users.length === 0) {
@@ -78,7 +112,34 @@ router.post('/batch-sync',
  * @access Private
  */
 router.post('/register-device', 
+  (req, res, next) => {
+    logger.info('Route hit: /api/v1/auth/register-device', {
+      method: req.method,
+      path: req.path,
+      baseUrl: req.baseUrl,
+      originalUrl: req.originalUrl,
+      headers: Object.keys(req.headers),
+      body: Object.keys(req.body)
+    });
+    next();
+  },
+  (req, res, next) => {
+    // Debug middleware to check authorization header
+    const authHeader = req.headers.authorization;
+    logger.info('Authorization header present:', { 
+      hasAuth: !!authHeader,
+      authType: authHeader ? authHeader.split(' ')[0] : 'none'
+    });
+    next();
+  },
   authMiddleware.authenticate.bind(authMiddleware),
+  (req, res, next) => {
+    logger.info('Authentication passed for /register-device route', {
+      userId: req.user?.id,
+      userRole: req.user?.role
+    });
+    next();
+  },
   exceptionHandler.asyncHandler(async (req, res) => {
     const { 
       token, 
@@ -92,7 +153,20 @@ router.post('/register-device',
     
     const userId = req.user.id;
     
+    logger.info('Processing register-device request', {
+      userId,
+      hasToken: !!token,
+      hasDeviceId: !!deviceId,
+      deviceType,
+      platform
+    });
+    
     if (!token || !deviceId) {
+      logger.warn('Missing required fields in register-device request', {
+        userId,
+        hasToken: !!token,
+        hasDeviceId: !!deviceId
+      });
       return res.status(400).json({
         success: false,
         error: {
@@ -111,10 +185,22 @@ router.post('/register-device',
     let previousToken = null;
     
     if (deviceToken) {
+      logger.info('Found existing device token', {
+        userId,
+        deviceId,
+        tokenId: deviceToken.id
+      });
+      
       // Token renewal
       if (deviceToken.token !== token) {
         previousToken = deviceToken.token;
         action = 'RENEWED';
+        logger.info('Renewing device token', {
+          userId,
+          deviceId,
+          oldToken: previousToken.substring(0, 10) + '...',
+          newToken: token.substring(0, 10) + '...'
+        });
       }
       
       await deviceToken.update({
@@ -122,6 +208,12 @@ router.post('/register-device',
         platform,
         lastUsed: new Date(),
         active: true
+      });
+      
+      logger.info('Updated existing device token', {
+        userId,
+        deviceId,
+        action
       });
     } else {
       // New token registration
@@ -135,26 +227,47 @@ router.post('/register-device',
         lastUsed: new Date(),
         active: true
       });
+      
+      logger.info('Created new device token', {
+        userId,
+        deviceId,
+        tokenId: deviceToken.id
+      });
     }
     
     // Log token history
-    await TokenHistory.create({
-      userId,
-      token,
-      tokenType: platform === 'ios' ? 'APN' : 'FCM',
-      deviceId,
-      deviceModel,
-      deviceOS,
-      appVersion,
-      action,
-      previousToken,
-      ipAddress: req.ip,
-      userAgent: req.get('user-agent'),
-      metadata: {
-        source: 'api',
-        authenticated: true
-      }
-    });
+    try {
+      await TokenHistory.create({
+        userId,
+        token,
+        tokenType: platform === 'ios' ? 'APN' : 'FCM',
+        deviceId,
+        deviceModel,
+        deviceOS,
+        appVersion,
+        action,
+        previousToken,
+        ipAddress: req.ip,
+        userAgent: req.get('user-agent'),
+        metadata: {
+          source: 'api',
+          authenticated: true
+        }
+      });
+      
+      logger.info('Created token history record', {
+        userId,
+        deviceId,
+        action
+      });
+    } catch (historyError) {
+      logger.error('Error creating token history', {
+        userId,
+        deviceId,
+        error: historyError.message
+      });
+      // Continue despite history error
+    }
     
     // Validate token with provider
     try {
@@ -163,15 +276,21 @@ router.post('/register-device',
         title: 'Device Registered',
         body: 'Your device has been registered for notifications'
       });
-    } catch (error) {
+      
+      logger.info('Test notification sent successfully', {
+        userId,
+        deviceId
+      });
+    } catch (notificationError) {
       logger.warn('Token validation failed', {
         userId,
         deviceId,
-        error: error.message
+        error: notificationError.message
       });
+      // Continue despite notification error
     }
     
-    logger.info('Device token registered', {
+    logger.info('Device token registration completed successfully', {
       userId,
       deviceId,
       action,
@@ -192,7 +311,24 @@ router.post('/register-device',
  * @access Private
  */
 router.delete('/device/:deviceId',
+  (req, res, next) => {
+    logger.info('Route hit: /api/v1/auth/device/:deviceId', {
+      method: req.method,
+      path: req.path,
+      deviceId: req.params.deviceId,
+      baseUrl: req.baseUrl,
+      originalUrl: req.originalUrl
+    });
+    next();
+  },
   authMiddleware.authenticate.bind(authMiddleware),
+  (req, res, next) => {
+    logger.info('Authentication passed for /device/:deviceId route', {
+      userId: req.user?.id,
+      deviceId: req.params.deviceId
+    });
+    next();
+  },
   exceptionHandler.asyncHandler(async (req, res) => {
     const { deviceId } = req.params;
     const userId = req.user.id;
@@ -202,6 +338,10 @@ router.delete('/device/:deviceId',
     });
     
     if (!deviceToken) {
+      logger.warn('Device not found', {
+        userId,
+        deviceId
+      });
       return res.status(404).json({
         success: false,
         error: {
@@ -241,6 +381,15 @@ router.delete('/device/:deviceId',
  * @access Private
  */
 router.get('/devices',
+  (req, res, next) => {
+    logger.info('Route hit: /api/v1/auth/devices', {
+      method: req.method,
+      path: req.path,
+      baseUrl: req.baseUrl,
+      originalUrl: req.originalUrl
+    });
+    next();
+  },
   authMiddleware.authenticate.bind(authMiddleware),
   exceptionHandler.asyncHandler(async (req, res) => {
     const userId = req.user.id;
@@ -271,6 +420,15 @@ router.get('/devices',
  * @access Public
  */
 router.post('/verify-token',
+  (req, res, next) => {
+    logger.info('Route hit: /api/v1/auth/verify-token', {
+      method: req.method,
+      path: req.path,
+      baseUrl: req.baseUrl,
+      originalUrl: req.originalUrl
+    });
+    next();
+  },
   exceptionHandler.asyncHandler(async (req, res) => {
     const { token, deviceInfo } = req.body;
     
@@ -385,6 +543,15 @@ router.post('/verify-token',
  * @access Private
  */
 router.get('/profile',
+  (req, res, next) => {
+    logger.info('Route hit: /api/v1/auth/profile', {
+      method: req.method,
+      path: req.path,
+      baseUrl: req.baseUrl,
+      originalUrl: req.originalUrl
+    });
+    next();
+  },
   authMiddleware.authenticate.bind(authMiddleware),
   exceptionHandler.asyncHandler(async (req, res) => {
     const userId = req.user.id;
@@ -417,6 +584,15 @@ router.get('/profile',
  * @access Private (Admin)
  */
 router.post('/token-history',
+  (req, res, next) => {
+    logger.info('Route hit: /api/v1/auth/token-history', {
+      method: req.method,
+      path: req.path,
+      baseUrl: req.baseUrl,
+      originalUrl: req.originalUrl
+    });
+    next();
+  },
   authMiddleware.authenticate.bind(authMiddleware),
   authMiddleware.authorize('admin'),
   exceptionHandler.asyncHandler(async (req, res) => {
@@ -462,5 +638,78 @@ router.post('/token-history',
     });
   })
 );
+
+// Debug endpoint to check what routes are registered
+router.get('/debug-routes', (req, res) => {
+  const routes = [];
+  
+  // Function to explore router stack
+  const exploreRoutes = (stack, basePath = '') => {
+    stack.forEach(layer => {
+      if (layer.route) {
+        // Routes registered directly on this router
+        const methods = Object.keys(layer.route.methods)
+          .filter(method => layer.route.methods[method])
+          .map(method => method.toUpperCase());
+        
+        routes.push({
+          path: basePath + layer.route.path,
+          methods,
+          middleware: layer.route.stack
+            .map(handler => handler.name || 'anonymous')
+            .filter(name => name !== 'bound dispatch')
+        });
+      } else if (layer.name === 'router' && layer.handle.stack) {
+        // Nested routers
+        const path = layer.regexp.source
+          .replace('^\\/','/')
+          .replace('(?=\\/|$)', '')
+          .replace(/\\\//g, '/');
+        
+        exploreRoutes(layer.handle.stack, basePath + path);
+      }
+    });
+  };
+  
+  // Get parent router stack if available
+  let parentRouter = null;
+  if (req.app && req.app._router) {
+    parentRouter = req.app._router;
+  }
+  
+  // Check parent router for our auth routes
+  if (parentRouter) {
+    const stack = parentRouter.stack;
+    exploreRoutes(stack);
+  } else {
+    routes.push({ warning: 'Could not access parent router stack' });
+  }
+  
+  // Return local routes
+  const localRoutes = [];
+  router.stack.forEach(layer => {
+    if (layer.route) {
+      const methods = Object.keys(layer.route.methods)
+        .filter(method => layer.route.methods[method])
+        .map(method => method.toUpperCase());
+      
+      localRoutes.push({
+        path: layer.route.path,
+        methods,
+        middleware: layer.route.stack
+          .map(handler => handler.name || 'anonymous')
+          .filter(name => name !== 'bound dispatch')
+      });
+    }
+  });
+  
+  res.json({
+    baseUrl: req.baseUrl,
+    parentRoutes: routes,
+    localRoutes: localRoutes,
+    mountPath: req.baseUrl,
+    app: Object.keys(req.app)
+  });
+});
 
 module.exports = router;
