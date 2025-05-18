@@ -84,6 +84,16 @@ class AuthenticationMiddleware {
 
     let user = await UserService.findByExternalId(externalId);
 
+    // Validate and normalize role if present in tokenData
+    if (tokenData.role && !['customer', 'usta', 'administrator'].includes(tokenData.role.toLowerCase())) {
+      logger.warn('Invalid role detected in token - will be normalized during sync', {
+        role: tokenData.role,
+        externalId,
+        requestId: req.id
+      });
+      // Let userSyncService handle role normalization
+    }
+
     if (!user || this.shouldSyncUser(user, tokenData)) {
       const syncData = {
         appUserId: externalId,
@@ -91,7 +101,7 @@ class AuthenticationMiddleware {
         email: tokenData.email,
         phone: tokenData.phone,
         avatar: tokenData.avatar || tokenData.picture,
-        role: tokenData.role || 'client',
+        role: tokenData.role || 'customer', // Default to customer; will be normalized by sync service
         ...tokenData.userData
       };
 

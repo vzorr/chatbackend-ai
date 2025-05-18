@@ -27,9 +27,15 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true
     },
     role: {
-      type: DataTypes.ENUM("client", "freelancer", "admin"),
-      defaultValue: "client",
-      allowNull: false
+      type: DataTypes.ENUM("customer", "usta", "administrator"),
+      defaultValue: "customer",
+      allowNull: false,
+      validate: {
+        isIn: {
+          args: [["customer", "usta", "administrator"]],
+          msg: "Role must be one of: customer, usta, administrator"
+        }
+      }
     },
     socketId: {
       type: DataTypes.STRING,
@@ -87,6 +93,15 @@ module.exports = (sequelize, DataTypes) => {
       // First try to find by externalId
       let user = await this.findOne({ where: { externalId } });
 
+      // Validate role using isIn validator
+      let role = tokenData.role || 'customer';
+      if (!['customer', 'usta', 'administrator'].includes(role.toLowerCase())) {
+        console.warn(`Invalid role value "${role}" detected, defaulting to "customer"`);
+        role = 'customer';
+      } else {
+        role = role.toLowerCase();
+      }
+
       if (!user) {
         // Generate UUID manually for id
         user = await this.create({
@@ -95,7 +110,7 @@ module.exports = (sequelize, DataTypes) => {
           name: tokenData.name || 'User',
           phone: tokenData.phone || 'unknown',  // Ensure phone is present due to allowNull: false
           email: tokenData.email || null,
-          role: 'client',
+          role: role,
           isOnline: true
         });
       }

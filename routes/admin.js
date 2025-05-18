@@ -1,4 +1,3 @@
-// routes/admin.js
 const express = require('express');
 const router = express.Router();
 const { Op } = require('sequelize');
@@ -7,10 +6,10 @@ const { authenticate } = require('../middleware/authentication');
 const { validateUUID } = require('../utils/validation');
 const logger = require('../utils/logger');
 
-// Admin authorization middleware
+// Admin authorization middleware - Updated for new administrator role
 const authorizeAdmin = async (req, res, next) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ error: 'Forbidden: Admin access required' });
+  if (req.user.role !== 'administrator') {
+    return res.status(403).json({ error: 'Forbidden: Administrator access required' });
   }
   next();
 };
@@ -37,6 +36,12 @@ router.get('/stats', authenticate, authorizeAdmin, async (req, res, next) => {
     const activeUsers = await User.count({
       where: { lastSeen: { [Op.gte]: yesterday } }
     });
+
+    // Role distribution - updated for new roles
+    const roleDistribution = await User.findAll({
+      attributes: ['role', [sequelize.fn('COUNT', sequelize.col('id')), 'count']],
+      group: ['role']
+    });
     
     res.json({
       totalStats: {
@@ -49,6 +54,10 @@ router.get('/stats', authenticate, authorizeAdmin, async (req, res, next) => {
         activeUsers,
         messagesSent: newMessages
       },
+      roleDistribution: roleDistribution.reduce((acc, item) => {
+        acc[item.role] = parseInt(item.get('count'));
+        return acc;
+      }, {}),
       timestamp: new Date()
     });
     
@@ -56,13 +65,12 @@ router.get('/stats', authenticate, authorizeAdmin, async (req, res, next) => {
     next(error);
   }
 });
-
-// Get all users with filtering and pagination
+// Get all users with filtering and pagination - updated for new roles
 router.get('/users', authenticate, authorizeAdmin, async (req, res, next) => {
   try {
     const { 
       search, 
-      role, 
+      role, // Now accepts customer, usta, administrator
       isOnline, 
       sortBy = 'createdAt', 
       sortOrder = 'DESC',
@@ -81,6 +89,12 @@ router.get('/users', authenticate, authorizeAdmin, async (req, res, next) => {
     }
     
     if (role) {
+      // Validate role
+      if (!['customer', 'usta', 'administrator'].includes(role)) {
+        return res.status(400).json({ 
+          error: 'Invalid role filter. Must be one of: customer, usta, administrator' 
+        });
+      }
       where.role = role;
     }
     
@@ -116,7 +130,7 @@ router.get('/users', authenticate, authorizeAdmin, async (req, res, next) => {
   }
 });
 
-// Update user
+// Update user - updated for new roles
 router.put('/users/:id', authenticate, authorizeAdmin, async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -135,7 +149,17 @@ router.put('/users/:id', authenticate, authorizeAdmin, async (req, res, next) =>
     // Update fields
     const updates = {};
     if (name !== undefined) updates.name = name;
-    if (role !== undefined) updates.role = role;
+    
+    // Validate role if provided
+    if (role !== undefined) {
+      if (!['customer', 'usta', 'administrator'].includes(role)) {
+        return res.status(400).json({ 
+          error: 'Invalid role. Must be one of: customer, usta, administrator' 
+        });
+      }
+      updates.role = role;
+    }
+    
     if (isActive !== undefined) updates.isActive = isActive;
     
     await user.update(updates);
@@ -158,7 +182,6 @@ router.put('/users/:id', authenticate, authorizeAdmin, async (req, res, next) =>
     next(error);
   }
 });
-
 // Delete user
 router.delete('/users/:id', authenticate, authorizeAdmin, async (req, res, next) => {
   try {

@@ -8,6 +8,27 @@ const crypto = require('crypto');
 class UserSyncService {
   constructor() {
     this.syncQueue = new Map();
+    // Define valid roles that match the database enum
+    this.validRoles = ['customer', 'usta', 'administrator'];
+  }
+
+  // Function to validate and normalize role
+  normalizeRole(role) {
+    // Check if role is valid (case-insensitive)
+    const normalizedRole = typeof role === 'string' ? role.toLowerCase() : null;
+    
+    // Return the role if it's in the valid list
+    if (normalizedRole && this.validRoles.includes(normalizedRole)) {
+      return normalizedRole;
+    }
+    
+    // Map legacy roles to new roles for backward compatibility
+    if (normalizedRole === 'client') return 'customer';
+    if (normalizedRole === 'admin') return 'administrator';
+    if (normalizedRole === 'freelancer') return 'customer';
+    
+    logger.warn(`Invalid role value "${role}" detected, defaulting to "customer"`);
+    return 'customer';
   }
 
   async syncUserFromMainApp(mainAppData, authToken) {
@@ -17,7 +38,8 @@ class UserSyncService {
       externalId: mainAppData.appUserId,
       email: mainAppData.email,
       phone: mainAppData.phone,
-      name: mainAppData.name
+      name: mainAppData.name,
+      role: mainAppData.role
     });
 
     try {
@@ -37,6 +59,9 @@ class UserSyncService {
 
       let user = await User.findOne({ where: { externalId: mainAppData.appUserId } });
 
+      // Normalize and validate the role
+      const normalizedRole = this.normalizeRole(mainAppData.role);
+
       const syncData = {
         id: mainAppData.appUserId,
         externalId: mainAppData.appUserId,
@@ -44,13 +69,14 @@ class UserSyncService {
         email: mainAppData.email,
         phone: mainAppData.phone || mainAppData.phoneNumber || mainAppData.mobile || '+00000000000', // Default phone if not provided
         avatar: mainAppData.avatar || mainAppData.profileImage,
-        role: mainAppData.role || 'client',
+        role: normalizedRole, // Use the normalized role
         metaData: {
           lastSyncAt: new Date(),
           syncSource: 'main_app',
           authToken: authToken ? authToken.substring(0, 10) + '...' : null,
           mainAppData: {
             userId: mainAppData.id,
+            originalRole: mainAppData.role, // Store original role for auditing
             createdAt: mainAppData.createdAt,
             updatedAt: mainAppData.updatedAt
           }
@@ -63,6 +89,8 @@ class UserSyncService {
           operationId,
           userId: user.id,
           externalId: user.externalId,
+          role: normalizedRole, // Log the normalized role
+          originalRole: mainAppData.role, // Log the original role for debugging
           changes: this.getChangedFields(user, syncData)
         });
       } else {
@@ -75,7 +103,9 @@ class UserSyncService {
         logger.info('Created new user from main app', {
           operationId,
           userId: user.id,
-          externalId: user.externalId
+          externalId: user.externalId,
+          role: normalizedRole, // Log the normalized role
+          originalRole: mainAppData.role // Log the original role for debugging
         });
       }
 
