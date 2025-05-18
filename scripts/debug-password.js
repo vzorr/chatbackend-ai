@@ -20,6 +20,7 @@ if (rawPassword) {
   console.log('Starts with space?:', rawPassword.startsWith(' '));
   console.log('Ends with space?:', rawPassword.endsWith(' '));
   console.log('Contains quotes?:', rawPassword.includes('"') || rawPassword.includes("'"));
+  console.log('URL encoded password:', encodeURIComponent(rawPassword));
 }
 
 // Check config.js password
@@ -39,40 +40,73 @@ console.log('\nConnection String Test:');
 const { Client } = require('pg');
 
 async function testConnections() {
-  // Method 1: Individual parameters
-  console.log('\nTesting with individual parameters...');
+  // Method 1: Individual parameters with URL encoding
+  console.log('\nTesting with individual parameters (URL-encoded password)...');
   const client1 = new Client({
     host: 'localhost',
     port: 5432,
     user: 'postgres',
-    password: process.env.DB_PASS,
+    password: process.env.DB_PASS ? encodeURIComponent(process.env.DB_PASS) : '',
     database: 'postgres'
   });
 
   try {
+    // scripts/debug-password.js (continued)
     await client1.connect();
-    console.log('✓ Individual parameters: Connected successfully');
+    console.log('✓ Individual parameters with URL-encoded password: Connected successfully');
     await client1.end();
   } catch (error) {
-    console.log('✗ Individual parameters failed:', error.message);
+    console.log('✗ Individual parameters with URL-encoded password failed:', error.message);
   }
 
-  // Method 2: Connection string
-  console.log('\nTesting with connection string...');
-  const connectionString = `postgresql://postgres:${encodeURIComponent(process.env.DB_PASS)}@localhost:5432/postgres`;
-  const client2 = new Client({ connectionString });
+  // Method 2: Individual parameters with raw password
+  console.log('\nTesting with individual parameters (raw password)...');
+  const client2 = new Client({
+    host: 'localhost',
+    port: 5432,
+    user: 'postgres',
+    password: process.env.DB_PASS || '',
+    database: 'postgres'
+  });
 
   try {
     await client2.connect();
-    console.log('✓ Connection string: Connected successfully');
+    console.log('✓ Individual parameters with raw password: Connected successfully');
     await client2.end();
   } catch (error) {
-    console.log('✗ Connection string failed:', error.message);
+    console.log('✗ Individual parameters with raw password failed:', error.message);
   }
 
-  // Method 3: Empty password
+  // Method 3: Connection string with URL encoding
+  console.log('\nTesting with connection string (URL-encoded password)...');
+  const encodedPassword = encodeURIComponent(process.env.DB_PASS || '');
+  const connectionString = `postgresql://postgres:${encodedPassword}@localhost:5432/postgres`;
+  const client3 = new Client({ connectionString });
+
+  try {
+    await client3.connect();
+    console.log('✓ Connection string with URL-encoded password: Connected successfully');
+    await client3.end();
+  } catch (error) {
+    console.log('✗ Connection string with URL-encoded password failed:', error.message);
+  }
+
+  // Method 4: Connection string with raw password
+  console.log('\nTesting with connection string (raw password)...');
+  const rawConnectionString = `postgresql://postgres:${process.env.DB_PASS || ''}@localhost:5432/postgres`;
+  const client4 = new Client({ connectionString: rawConnectionString });
+
+  try {
+    await client4.connect();
+    console.log('✓ Connection string with raw password: Connected successfully');
+    await client4.end();
+  } catch (error) {
+    console.log('✗ Connection string with raw password failed:', error.message);
+  }
+
+  // Method 5: Empty password
   console.log('\nTesting with empty password...');
-  const client3 = new Client({
+  const client5 = new Client({
     host: 'localhost',
     port: 5432,
     user: 'postgres',
@@ -81,12 +115,14 @@ async function testConnections() {
   });
 
   try {
-    await client3.connect();
+    await client5.connect();
     console.log('✓ Empty password: Connected successfully');
-    await client3.end();
+    await client5.end();
   } catch (error) {
     console.log('✗ Empty password failed:', error.message);
   }
+
+  console.log('\nConnection test complete. Check if any method succeeded.');
 }
 
 testConnections().catch(console.error);

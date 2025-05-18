@@ -8,16 +8,25 @@ const logger = require('../utils/logger');
 async function runMigrations() {
   console.log('Running migrations with custom runner...\n');
 
-  // Create connection (proven to work from your debug test)
+  // Safely encode password to handle special characters
+  const dbPassword = process.env.DB_PASS ? encodeURIComponent(process.env.DB_PASS) : '';
+  
+  // Create connection (with encoded password)
   const sequelize = new Sequelize(
     process.env.DB_NAME || 'myusta_chatapp',
     process.env.DB_USER || 'postgres',
-    process.env.DB_PASS,
+    dbPassword,
     {
       host: process.env.DB_HOST || 'localhost',
       port: process.env.DB_PORT || 5432,
       dialect: 'postgres',
-      logging: false
+      logging: false,
+      dialectOptions: {
+        ssl: process.env.DB_SSL === 'true' ? {
+          require: true,
+          rejectUnauthorized: false
+        } : false
+      }
     }
   );
 
@@ -51,6 +60,7 @@ async function runMigrations() {
 
     // Run pending migrations
     let ranCount = 0;
+    let errorCount = 0;
     for (const file of migrationFiles) {
       if (completedNames.includes(file)) {
         console.log(`⏭️  Skipping: ${file} (already run)`);
@@ -76,16 +86,34 @@ async function runMigrations() {
         ranCount++;
       } catch (error) {
         console.error(`❌ Failed: ${file}`);
-        console.error(error.message);
-        throw error;
+        console.error(`Error: ${error.message}`);
+        console.error(`Stack: ${error.stack}`);
+        errorCount++;
+        
+        // Decide whether to continue with next migrations
+        if (process.env.CONTINUE_ON_ERROR !== 'true') {
+          console.error('Stopping migration process due to error. Set CONTINUE_ON_ERROR=true to force continue.');
+          throw error;
+        } else {
+          console.warn('⚠️ Continuing to next migration despite error due to CONTINUE_ON_ERROR=true setting');
+        }
       }
     }
 
-    console.log(`\n✨ Migration complete! Ran ${ranCount} migrations.`);
+    console.log(`\n✨ Migration process completed!`);
+    console.log(`Results: ${ranCount} migrations ran successfully, ${errorCount} failed.`);
+    
+    // Close database connection
     await sequelize.close();
-    process.exit(0);
+    
+    // Exit with error code if any migrations failed
+    if (errorCount > 0) {
+      process.exit(1);
+    } else {
+      process.exit(0);
+    }
   } catch (error) {
-    console.error('\n❌ Migration failed:', error.message);
+    console.error('\n❌ Migration process failed:', error.message);
     await sequelize.close();
     process.exit(1);
   }

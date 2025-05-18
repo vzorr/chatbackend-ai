@@ -126,10 +126,16 @@ module.exports = {
 
     // Create trigger to update updatedAt
     await queryInterface.sequelize.query(`
-      CREATE TRIGGER update_token_history_modtime
-      BEFORE UPDATE ON "token_history"
-      FOR EACH ROW
-      EXECUTE PROCEDURE update_modified_column();
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_trigger WHERE tgname = 'update_token_history_modtime'
+        ) THEN
+          CREATE TRIGGER update_token_history_modtime
+          BEFORE UPDATE ON "token_history"
+          FOR EACH ROW
+          EXECUTE PROCEDURE update_modified_column();
+        END IF;
+      END $$;
     `);
   },
 

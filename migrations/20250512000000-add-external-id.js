@@ -1,75 +1,52 @@
+// migrations/20250512000000-add-external-id.js
 'use strict';
 
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    const tableInfo = await queryInterface.describeTable('users');
-
-    if (!tableInfo.externalId) {
-      console.log('Adding column externalId to users...');
-      await queryInterface.addColumn('users', 'externalId', {
-        type: Sequelize.UUID,
-        allowNull: true,
-        unique: true,
-        comment: 'UUID of the user from the main app'
-      });
-      console.log('✅ Column externalId added.');
-    } else {
-      console.log('⚠ Column externalId already exists. Skipping...');
-    }
-
-    if (!tableInfo.email) {
-      console.log('Adding column email to users...');
-      await queryInterface.addColumn('users', 'email', {
-        type: Sequelize.STRING,
-        allowNull: true,
-        unique: true
-      });
-      console.log('✅ Column email added.');
-    } else {
-      console.log('⚠ Column email already exists. Skipping...');
-    }
-
-    // Always attempt to change column safely
-    try {
-      console.log('Updating phone column to allow NULL and be unique...');
-      await queryInterface.changeColumn('users', 'phone', {
-        type: Sequelize.STRING,
-        allowNull: true,
-        unique: true
-      });
-      console.log('✅ Phone column updated.');
-    } catch (error) {
-      console.error('❌ Error updating phone column:', error.message);
-      throw error;
-    }
-
-    // Check if index already exists before adding
+    console.log('Running externalId column NOT NULL constraint migration...');
+    
+    // First check if we have any NULL values
     const [results] = await queryInterface.sequelize.query(`
-      SELECT to_regclass('public.idx_users_external_id') as index_exists;
+      SELECT COUNT(*) as count FROM users WHERE "externalId" IS NULL
     `);
-    if (!results[0].index_exists) {
-      console.log('Adding index idx_users_external_id...');
-      await queryInterface.addIndex('users', ['externalId'], {
-        name: 'idx_users_external_id'
-      });
-      console.log('✅ Index idx_users_external_id added.');
-    } else {
-      console.log('⚠ Index idx_users_external_id already exists. Skipping...');
+    
+    const nullCount = parseInt(results[0].count);
+    if (nullCount > 0) {
+      console.log(`Found ${nullCount} users with NULL externalId. Please update these records.`);
+      return Promise.reject(new Error(`Cannot make externalId NOT NULL - found ${nullCount} users with NULL values`));
+    }
+
+    // Add NOT NULL constraint in a separate ALTER COLUMN statement
+    // PostgreSQL doesn't allow combining NOT NULL with other constraints in a single statement
+    try {
+      // First just update the NOT NULL constraint
+      await queryInterface.sequelize.query(`
+        ALTER TABLE users 
+        ALTER COLUMN "externalId" SET NOT NULL
+      `);
+      
+      console.log('✅ Successfully added NOT NULL constraint to externalId column');
+      return Promise.resolve();
+    } catch (error) {
+      console.error('❌ Error updating externalId column:', error.message);
+      throw error;
     }
   },
 
   down: async (queryInterface, Sequelize) => {
-    console.log('Removing index and columns...');
-    await queryInterface.removeIndex('users', 'idx_users_external_id');
-    await queryInterface.removeColumn('users', 'externalId');
-    await queryInterface.removeColumn('users', 'email');
-
-    // Restore phone as required
-    await queryInterface.changeColumn('users', 'phone', {
-      type: Sequelize.STRING,
-      allowNull: false,
-      unique: true
-    });
-    console.log('✅ All reverted.');
+    try {
+      console.log('Removing NOT NULL constraint from externalId column...');
+      
+      // Use raw SQL to remove just the NOT NULL constraint
+      await queryInterface.sequelize.query(`
+        ALTER TABLE users
+        ALTER COLUMN "externalId" DROP NOT NULL
+      `);
+      
+      console.log('✅ NOT NULL constraint removed from externalId column');
+    } catch (error) {
+      console.error('❌ Error while modifying externalId:', error.message);
+      throw error;
+    }
   }
 };

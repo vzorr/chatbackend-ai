@@ -189,7 +189,7 @@ router.post('/register-device',
     });
     next();
   },
-  // Use a direct middleware function for authentication
+  // Custom authentication middleware with user creation
   async (req, res, next) => {
     try {
       const token = req.headers.authorization?.replace('Bearer ', '');
@@ -209,8 +209,7 @@ router.post('/register-device',
       logger.info('Token verified', { 
         hasId: !!decoded.id,
         hasUserId: !!decoded.userId,
-        hasSub: !!decoded.sub,
-        tokenData: JSON.stringify(decoded)
+        hasSub: !!decoded.sub
       });
       
       // Get user ID from token
@@ -225,44 +224,112 @@ router.post('/register-device',
           }
         });
       }
+
+      // Wait for database initialization if needed
+      if (typeof db.waitForInitialization === 'function') {
+        await db.waitForInitialization();
+      }
       
+      // Check if models are available
+      const models = typeof db.getModels === 'function' ? db.getModels() : db;
+      const User = models.User;
+      
+      if (!User) {
+        logger.error('User model not found in database models');
+        return res.status(500).json({
+          success: false,
+          error: {
+            code: 'SERVER_ERROR',
+            message: 'Server configuration error'
+          }
+        });
+      }
+
       // Try to find user by ID first
       let user = null;
       try {
-        if (db.User) {
-          user = await db.User.findOne({ 
-            where: { id: userId }
+        // First try by ID
+        user = await User.findByPk(userId);
+        
+        // If not found and externalId provided, try that
+        if (!user && decoded.externalId) {
+          user = await User.findOne({
+            where: { externalId: decoded.externalId }
           });
-          
-          if (!user && decoded.externalId) {
-            // Try by externalId if available
-            user = await db.User.findOne({
-              where: { externalId: decoded.externalId }
-            });
-          }
-        } else {
-          logger.error('User model not found in db');
+          logger.info('User lookup by externalId', { 
+            externalId: decoded.externalId, 
+            found: !!user 
+          });
         }
       } catch (dbError) {
         logger.error('Error finding user', {
           error: dbError.message,
           userId,
-          externalId: decoded.externalId
+          externalId: decoded.externalId || 'not provided'
         });
       }
       
+      // If user not found, create one
       if (!user) {
-        logger.warn('User not found in database', {
+        logger.warn('User not found in database, creating new user', {
           userId,
-          externalId: decoded.externalId
+          externalId: decoded.externalId || userId
         });
-        return res.status(401).json({
-          success: false,
-          error: {
-            code: 'USER_NOT_FOUND',
-            message: 'User not found'
+        
+        try {
+          // Normalize role to match database ENUM
+          let role = 'customer'; // Default
+          if (decoded.role) {
+            const normalizedRole = decoded.role.toLowerCase();
+            if (['customer', 'usta', 'administrator'].includes(normalizedRole)) {
+              role = normalizedRole;
+            } else if (normalizedRole === 'admin') {
+              role = 'administrator';
+            }
           }
-        });
+          
+          // Create new user
+          user = await User.create({
+            id: userId,
+            externalId: decoded.externalId || userId, // Use provided externalId or fall back to userId
+            name: decoded.name || decoded.displayName || 'User',
+            phone: decoded.phone || '+00000000000', // Placeholder
+            email: decoded.email || null,
+            role: role,
+            isOnline: true,
+            lastSeen: new Date(),
+            metaData: {
+              source: 'device_registration',
+              createdAt: new Date().toISOString(),
+              tokenData: {
+                iat: decoded.iat,
+                exp: decoded.exp,
+                role: decoded.role
+              }
+            }
+          });
+          
+          logger.info('Created new user during device registration', {
+            userId: user.id,
+            externalId: user.externalId,
+            role: user.role
+          });
+        } catch (createError) {
+          logger.error('Failed to create user during device registration', {
+            error: createError.message,
+            stack: createError.stack,
+            userId,
+            code: createError.code || 'UNKNOWN'
+          });
+          
+          return res.status(500).json({
+            success: false,
+            error: {
+              code: 'USER_CREATION_FAILED',
+              message: 'Failed to create user account'
+            }
+          });
+        }
       }
       
       // Set user in request
@@ -270,17 +337,49 @@ router.post('/register-device',
       req.token = token;
       req.decodedToken = decoded;
       
-      logger.info('User authenticated', {
-        hasUser: !!req.user,
-        userId: req.user.id,
-        userRole: req.user.role
+      logger.info('User authenticated for device registration', {
+        userId: user.id,
+        userRole: user.role,
+        externalId: user.externalId
       });
+      
       next();
     } catch (error) {
-      logger.error('Authentication error', {
+      if (error.name === 'TokenExpiredError') {
+        logger.warn('Expired token in device registration', {
+          error: error.message
+        });
+        
+        return res.status(401).json({
+          success: false,
+          error: {
+            code: 'TOKEN_EXPIRED',
+            message: 'Authentication token has expired'
+          }
+        });
+      }
+      
+      if (error.name === 'JsonWebTokenError') {
+        logger.warn('Invalid token in device registration', {
+          error: error.message
+        });
+        
+        return res.status(401).json({
+          success: false,
+          error: {
+            code: 'INVALID_TOKEN',
+            message: 'Invalid authentication token'
+          }
+        });
+      }
+      
+      logger.error('Authentication error in device registration', {
         error: error.message,
-        stack: error.stack
+        stack: error.stack,
+        name: error.name,
+        code: error.code || 'UNKNOWN'
       });
+      
       return res.status(401).json({
         success: false,
         error: {
@@ -290,6 +389,7 @@ router.post('/register-device',
       });
     }
   },
+  // Log that authentication passed
   (req, res, next) => {
     logger.info('Authentication passed for /register-device route', {
       userId: req.user?.id,
@@ -298,7 +398,8 @@ router.post('/register-device',
     });
     next();
   },
-  exceptionHandler.asyncHandler(async (req, res) => {
+  // Main request handler
+  async (req, res) => {
     // Safety check
     if (!req.user || !req.user.id) {
       logger.error('User missing in request after authentication', {
@@ -327,8 +428,10 @@ router.post('/register-device',
     if (!token || !deviceId) {
       logger.warn('Missing required fields in register-device request', {
         hasToken: !!token,
-        hasDeviceId: !!deviceId
+        hasDeviceId: !!deviceId,
+        userId: req.user.id
       });
+      
       return res.status(400).json({
         success: false,
         error: {
@@ -342,110 +445,103 @@ router.post('/register-device',
     
     logger.info('Processing register-device request', {
       userId,
-      hasToken: !!token,
-      hasDeviceId: !!deviceId,
+      deviceId,
       deviceType,
       platform
     });
     
-    // Ensure db is initialized
-    try {
-      if (typeof db.initialize === 'function') {
-        await db.initialize();
-      }
-      
-      logger.info('Database models status', {
-        hasDeviceToken: !!db.DeviceToken,
-        hasTokenHistory: !!db.TokenHistory,
-        hasUser: !!db.User,
-        availableModels: Object.keys(db).filter(k => 
-          k !== 'initialize' && k !== 'getDbInstance' && k !== 'sync'
-        )
+    // Wait for database initialization if needed
+    if (typeof db.waitForInitialization === 'function') {
+      await db.waitForInitialization();
+    }
+    
+    // Ensure models are available
+    const models = typeof db.getModels === 'function' ? db.getModels() : db;
+    const DeviceToken = models.DeviceToken;
+    const TokenHistory = models.TokenHistory;
+    
+    if (!DeviceToken || !TokenHistory) {
+      logger.error('Required models not found', {
+        hasDeviceToken: !!DeviceToken,
+        hasTokenHistory: !!TokenHistory
       });
       
-      // Check for existing token
-      let deviceToken = null;
-      
-      try {
-        deviceToken = await db.DeviceToken.findOne({
-          where: { deviceId, userId }
-        });
-      } catch (findError) {
-        logger.error('Error finding device token', {
-          error: findError.message,
-          stack: findError.stack,
-          userId,
-          deviceId
-        });
-      }
+      return res.status(500).json({
+        success: false,
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Server configuration error'
+        }
+      });
+    }
+    
+    try {
+      // Check if token already exists for this device
+      const existingToken = await DeviceToken.findOne({
+        where: { 
+          userId: userId,
+          deviceId: deviceId
+        }
+      });
       
       let action = 'REGISTERED';
       let previousToken = null;
+      let deviceTokenRecord = null;
       
-      if (deviceToken) {
+      if (existingToken) {
         logger.info('Found existing device token', {
           userId,
           deviceId,
-          tokenId: deviceToken.id
+          tokenId: existingToken.id
         });
         
-        // Token renewal
-        if (deviceToken.token !== token) {
-          previousToken = deviceToken.token;
+        // Check if token value changed
+        if (existingToken.token !== token) {
+          previousToken = existingToken.token;
           action = 'RENEWED';
+          
           logger.info('Renewing device token', {
             userId,
             deviceId,
-            oldToken: previousToken.substring(0, 10) + '...',
-            newToken: token.substring(0, 10) + '...'
+            action
           });
         }
         
-        await deviceToken.update({
+        // Update token
+        await existingToken.update({
           token,
           platform,
+          deviceType,
           lastUsed: new Date(),
           active: true
         });
         
-        logger.info('Updated existing device token', {
+        deviceTokenRecord = existingToken;
+        
+      } else {
+        // Create new token
+        deviceTokenRecord = await DeviceToken.create({
+          id: uuidv4(),
+          userId,
+          token,
+          deviceType,
+          platform,
+          deviceId,
+          lastUsed: new Date(),
+          active: true
+        });
+        
+        logger.info('Created new device token', {
           userId,
           deviceId,
-          action
+          tokenId: deviceTokenRecord.id
         });
-      } else {
-        // New token registration
-        try {
-          deviceToken = await db.DeviceToken.create({
-            id: uuidv4(),
-            userId,
-            token,
-            deviceType,
-            platform,
-            deviceId,
-            lastUsed: new Date(),
-            active: true
-          });
-          
-          logger.info('Created new device token', {
-            userId,
-            deviceId,
-            tokenId: deviceToken.id
-          });
-        } catch (createError) {
-          logger.error('Error creating device token', {
-            error: createError.message,
-            stack: createError.stack,
-            userId,
-            deviceId
-          });
-          throw createError;
-        }
       }
       
       // Log token history
       try {
-        await db.TokenHistory.create({
+        await TokenHistory.create({
+          id: uuidv4(),
           userId,
           token,
           tokenType: platform === 'ios' ? 'APN' : 'FCM',
@@ -478,35 +574,7 @@ router.post('/register-device',
         // Continue despite history error
       }
       
-      // Validate token with provider
-      try {
-        if (notificationManager && notificationManager.sendToDevice) {
-          await notificationManager.sendToDevice(deviceToken, {
-            type: 'test',
-            title: 'Device Registered',
-            body: 'Your device has been registered for notifications'
-          });
-          
-          logger.info('Test notification sent successfully', {
-            userId,
-            deviceId
-          });
-        } else {
-          logger.warn('Notification manager not available', {
-            hasManager: !!notificationManager,
-            hasSendMethod: notificationManager && !!notificationManager.sendToDevice
-          });
-        }
-      } catch (notificationError) {
-        logger.warn('Token validation failed', {
-          userId,
-          deviceId,
-          error: notificationError.message,
-          stack: notificationError.stack
-        });
-        // Continue despite notification error
-      }
-      
+      // Success response
       logger.info('Device token registration completed successfully', {
         userId,
         deviceId,
@@ -517,14 +585,50 @@ router.post('/register-device',
       res.json({
         success: true,
         action,
-        tokenId: deviceToken.id
+        tokenId: deviceTokenRecord.id
       });
+      
     } catch (error) {
       logger.error('Error in device registration process', {
         error: error.message,
         stack: error.stack,
-        userId
+        userId,
+        deviceId,
+        name: error.name,
+        code: error.code || 'UNKNOWN'
       });
+      
+      // Handle specific error types
+      if (error.name === 'SequelizeUniqueConstraintError') {
+        return res.status(409).json({
+          success: false,
+          error: {
+            code: 'TOKEN_EXISTS',
+            message: 'This token is already registered to another device'
+          }
+        });
+      }
+      
+      if (error.name === 'SequelizeForeignKeyConstraintError') {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_USER',
+            message: 'Invalid user reference'
+          }
+        });
+      }
+      
+      if (error.name === 'SequelizeValidationError') {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Invalid device token data',
+            details: error.errors.map(e => e.message).join(', ')
+          }
+        });
+      }
       
       res.status(500).json({
         success: false,
@@ -534,7 +638,7 @@ router.post('/register-device',
         }
       });
     }
-  })
+  }
 );
 
 /**
