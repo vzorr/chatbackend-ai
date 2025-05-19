@@ -14,7 +14,7 @@ class EnterpriseLogger {
 
   createLogger() {
     const format = winston.format.combine(
-      winston.format.timestamp({ format: () => new Date().toISOString() }),
+      winston.format.timestamp({ format: () => new Date().toISOString() }), // This already returns ISO format with T and Z
       winston.format.errors({ stack: true }),
       winston.format.splat(),
       winston.format.json(),
@@ -90,7 +90,17 @@ class EnterpriseLogger {
             }
           },
           indexPrefix: config.logging?.elasticsearch?.indexPrefix || 'chat-server-logs',
-          dataStream: true
+          dataStream: true,
+          // Add custom transformer for Elasticsearch to ensure proper timestamp format
+          transformer: (logData) => {
+            // Ensure timestamp is in ISO format
+            return {
+              '@timestamp': new Date(logData.timestamp).toISOString(),
+              message: logData.message,
+              severity: logData.level,
+              fields: logData
+            };
+          }
         }));
       } catch (error) {
         console.warn('Failed to initialize Elasticsearch transport:', error.message);
