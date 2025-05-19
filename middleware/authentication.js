@@ -3,7 +3,7 @@ const jwt = require('jsonwebtoken');
 const logger = require('../utils/logger');
 const { validateUUID } = require('../utils/validation');
 const userSyncService = require('../services/sync/userSyncService');
-const UserService = require('../services/UserService');
+const UserService = require('../services/userService');
 
 class AuthenticationMiddleware {
   async authenticate(req, res, next) {
