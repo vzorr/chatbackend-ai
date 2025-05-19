@@ -1,6 +1,6 @@
 // socket/middlewares/socketAuthMiddleware.js
 const jwt = require('jsonwebtoken');
-const UserService = require('../../services/UserService');
+const UserService = require('../../services/userService');
 const userSyncService = require('../../services/sync/userSyncService');
 const logger = require('../../utils/logger');
 const { validateUUID } = require('../../utils/validation');
