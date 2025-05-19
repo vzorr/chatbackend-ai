@@ -1,4 +1,4 @@
-
+// queueWorker.js
 require('dotenv').config();
 const { queueService } = require('./services/queue');
 const logger = require('./utils/logger');
@@ -8,31 +8,46 @@ const CircuitBreaker = require('opossum');
 const os = require('os');
 const config = require('./config/config');
 const express = require('express');
-const { createBullBoard } = require('bull-board');
-const { BullAdapter } = require('bull-board/bullAdapter');
-const { ExpressAdapter } = require('bull-board');
-
 const { createBullBoard } = require('@bull-board/api');
 const { BullAdapter } = require('@bull-board/api/bullAdapter');
 const { ExpressAdapter } = require('@bull-board/express');
 
-
+// Import all queue services
+const messageQueueService = require('./services/queue/MessageQueueService');
+const presenceQueueService = require('./services/queue/PresenceQueueService');
 const notificationQueueService = require('./services/queue/notificationQueueService');
 
-// Add this near the end of the file, before the shutdown handler setup
-// Probably around line 200-250, after your other queue processors
-
-// Process notification queue periodically
-setInterval(async () => {
+// Initialize all services at startup
+async function initializeQueueServices() {
+  logger.info('Initializing queue services...');
+  
   try {
-    await notificationQueueService.processNotificationQueue();
-  } catch (error) {
-    logger.error(`Error processing notification queue: ${error.message}`, {
-      error: error.stack
-    });
-  }
-}, 5000); // Process every 5 seconds
+    // Initialize all services
+    await messageQueueService.initialize();
+    await presenceQueueService.initialize();
+    // Notification service is likely already initialized
 
+    // Start processing with each service
+    await messageQueueService.start();
+    await presenceQueueService.start();
+    
+    logger.info('All queue services initialized and started successfully');
+  } catch (error) {
+    logger.error('Failed to initialize queue services', {
+      error: error.message,
+      stack: error.stack
+    });
+    throw error;
+  }
+}
+
+// Call the initialization function
+initializeQueueServices().catch(error => {
+  logger.error('Error during queue services initialization', { 
+    error: error.message,
+    stack: error.stack
+  });
+});
 
 // Prometheus custom metrics
 const jobProcessedCounter = new promClient.Counter({
@@ -136,6 +151,28 @@ setInterval(async () => {
   logger.clearContext();
 }, 300000);
 
+// Process notification queue periodically
+setInterval(async () => {
+  try {
+    await notificationQueueService.processNotificationQueue();
+  } catch (error) {
+    logger.error(`Error processing notification queue: ${error.message}`, {
+      error: error.stack
+    });
+  }
+}, 5000); // Process every 5 seconds
+
+// Process presence queue cleanup periodically
+setInterval(async () => {
+  try {
+    await presenceQueueService.cleanupStalePresenceData();
+  } catch (error) {
+    logger.error(`Error cleaning up stale presence data: ${error.message}`, {
+      error: error.stack
+    });
+  }
+}, 300000); // Clean up every 5 minutes
+
 // Bull Board UI (configurable)
 if (config.bullBoard.enabled) {
   const bullBoardApp = express();
@@ -161,6 +198,18 @@ if (config.bullBoard.enabled) {
 const shutdown = async () => {
   logger.info('Worker shutdown initiated');
   try {
+    // Stop all queue services
+    if (messageQueueService && messageQueueService.stop) {
+      await messageQueueService.stop();
+      logger.info('Message queue service stopped');
+    }
+    
+    if (presenceQueueService && presenceQueueService.stop) {
+      await presenceQueueService.stop();
+      logger.info('Presence queue service stopped');
+    }
+
+    // Close queue service last
     await queueService.close();
     logger.info('Queue closed gracefully');
     process.exit(0);
