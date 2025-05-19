@@ -17,6 +17,23 @@ const { BullAdapter } = require('@bull-board/api/bullAdapter');
 const { ExpressAdapter } = require('@bull-board/express');
 
 
+const notificationQueueService = require('./services/queue/notificationQueueService');
+
+// Add this near the end of the file, before the shutdown handler setup
+// Probably around line 200-250, after your other queue processors
+
+// Process notification queue periodically
+setInterval(async () => {
+  try {
+    await notificationQueueService.processNotificationQueue();
+  } catch (error) {
+    logger.error(`Error processing notification queue: ${error.message}`, {
+      error: error.stack
+    });
+  }
+}, 5000); // Process every 5 seconds
+
+
 // Prometheus custom metrics
 const jobProcessedCounter = new promClient.Counter({
   name: 'worker_jobs_processed_total',

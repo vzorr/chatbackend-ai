@@ -5,7 +5,9 @@ const config = require('../../config/config');
 // Import your actual services
 const redisService = require('../../services/redis');
 const queueService = require('../../services/queue/queueService');
-const notificationManager = require('../../services/notifications/notificationManager');
+//const notificationManager = require('../../services/notifications/notificationManager');
+
+const notificationService = require('../../services/notifications/notificationService');
 
 async function initializeServices() {
   const startTime = Date.now();
@@ -15,7 +17,11 @@ async function initializeServices() {
     // Initialize services in dependency order
     await initializeRedisService();
     await initializeQueueService();
-    await initializeNotificationManager();
+
+    // Initialize notification service
+    await initializeNotificationService();
+
+    //await initializeNotificationManager();
     
     const duration = Date.now() - startTime;
     logger.info('✅ [Services] All services initialized', {
@@ -29,6 +35,23 @@ async function initializeServices() {
       stack: error.stack
     });
     throw error;
+  }
+}
+
+async function initializeNotificationService() {
+  logger.info('🔧 [Services] Initializing notification service...');
+  
+  try {
+    await notificationService.initialize();
+    
+    logger.info('✅ [Services] Notification service initialized');
+  } catch (error) {
+    logger.error('❌ [Services] Notification service initialization failed', {
+      error: error.message
+    });
+    if (config.notifications.critical) {
+      throw error;
+    }
   }
 }
 
@@ -104,4 +127,4 @@ async function initializeNotificationManager() {
   }
 }
 
-module.exports = { initializeServices };
+module.exports = { initializeServices, initializeNotificationService };

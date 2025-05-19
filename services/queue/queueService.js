@@ -98,21 +98,21 @@ const enqueuePresenceUpdate = async (userId, isOnline, socketId = null) => {
   return true;
 };
 
-// Enqueue notification
-const enqueueNotification = async (userId, type, data) => {
+// Add function to enqueue a notification
+const enqueueNotification = async (notification) => {
+  const id = notification.id || uuidv4();
   const payload = {
-    id: uuidv4(),
-    userId,
-    type,
-    data,
-    timestamp: Date.now()
+    ...notification,
+    id,
+    queuedAt: Date.now()
   };
   
   await redisClient.rpush(QUEUES.NOTIFICATIONS, JSON.stringify(payload));
-  logger.info(`Notification for user ${userId} enqueued`);
+  logger.info(`Notification ${id} enqueued for processing`);
   
-  return true;
+  return { notificationId: id };
 };
+
 
 // Enqueue conversation operation
 const enqueueConversationOperation = async (operation, data) => {
