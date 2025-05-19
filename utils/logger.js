@@ -14,7 +14,7 @@ class EnterpriseLogger {
 
   createLogger() {
     const format = winston.format.combine(
-      winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss.SSS' }),
+      winston.format.timestamp({ format: () => new Date().toISOString() }),
       winston.format.errors({ stack: true }),
       winston.format.splat(),
       winston.format.json(),
