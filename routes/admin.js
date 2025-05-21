@@ -272,4 +272,67 @@ router.get('/messages', authenticate, authorizeAdmin, async (req, res, next) => 
   }
 });
 
+// Add to routes/admin.js
+
+/**
+ * @route GET /api/v1/admin/device-tokens
+ * @desc Get all device tokens in the system (admin only)
+ * @access Private (Admin)
+ */
+router.get('/device-tokens', authenticate, authorizeAdmin, async (req, res, next) => {
+  try {
+    const { 
+      userId, 
+      platform, 
+      active, 
+      limit = 50, 
+      offset = 0 
+    } = req.query;
+    
+    // Build query conditions
+    const where = {};
+    
+    if (userId) {
+      where.userId = userId;
+    }
+    
+    if (platform) {
+      where.platform = platform;
+    }
+    
+    if (active !== undefined) {
+      where.active = active === 'true';
+    }
+    
+    // Get tokens with pagination
+    const { count, rows: deviceTokens } = await DeviceToken.findAndCountAll({
+      where,
+      include: [
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'name', 'email', 'phone']
+        }
+      ],
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+      order: [['lastUsed', 'DESC']]
+    });
+    
+    res.json({
+      success: true,
+      deviceTokens,
+      total: count,
+      limit: parseInt(limit),
+      offset: parseInt(offset)
+    });
+    
+  } catch (error) {
+    logger.error('Error fetching all device tokens', {
+      error: error.message
+    });
+    next(error);
+  }
+});
+
 module.exports = router;

@@ -441,4 +441,88 @@ router.post('/device', authenticate, async (req, res, next) => {
   }
 });
 
+
+// Add this to your routes/notification.js file
+
+/**
+ * @route POST /api/v1/notifications/trigger-event
+ * @desc Trigger notification for a business event
+ * @access Private (API Key)
+ */
+router.post('/trigger-event', 
+  authMiddleware.authenticateApiKey.bind(authMiddleware),
+  exceptionHandler.asyncHandler(async (req, res, next) => {
+    try {
+      const {
+        appId,
+        eventId,
+        recipients,  // array of userIds
+        data,        // event-specific data for template variables
+        metadata     // additional data
+      } = req.body;
+      
+      // Validate required fields
+      if (!appId || !eventId || !recipients || !Array.isArray(recipients)) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'MISSING_REQUIRED_FIELDS',
+            message: 'appId, eventId, and recipients array are required'
+          }
+        });
+      }
+      
+      logger.info('Received notification trigger request', {
+        appId,
+        eventId,
+        recipientCount: recipients.length
+      });
+      
+      // Process each recipient
+      const results = [];
+      
+      for (const userId of recipients) {
+        try {
+          const result = await notificationService.processNotification(
+            appId,
+            eventId,
+            userId,
+            data
+          );
+          
+          results.push({
+            userId,
+            success: true,
+            operationId: result.operationId
+          });
+        } catch (error) {
+          logger.error('Failed to process notification for user', {
+            userId,
+            eventId,
+            error: error.message
+          });
+          
+          results.push({
+            userId,
+            success: false,
+            error: error.message
+          });
+        }
+      }
+      
+      res.json({
+        success: true,
+        eventId,
+        processed: results.length,
+        successful: results.filter(r => r.success).length,
+        failed: results.filter(r => !r.success).length,
+        results
+      });
+    } catch (error) {
+      next(error);
+    }
+  })
+);
+
+
 module.exports = router;
