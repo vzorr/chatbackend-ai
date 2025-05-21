@@ -5,6 +5,7 @@ const { User, Message, Conversation, deviceTokens, DeviceToken } = require('../d
 const { authenticate } = require('../middleware/authentication');
 const { validateUUID } = require('../utils/validation');
 const logger = require('../utils/logger');
+const { getDbInstance } = require('../db/models');
 
 // Admin authorization middleware - Updated for new administrator role
 
@@ -283,6 +284,16 @@ router.get('/messages', authenticate, authorizeAdmin, async (req, res, next) => 
  */
 router.get('/device-tokens', authenticate, authorizeAdmin, async (req, res, next) => {
   try {
+
+    const db = getDbInstance();
+    const { DeviceToken, User } = db;
+
+    if (!DeviceToken) {
+      throw new Error('DeviceToken model not initialized. Make sure initializeModels() was called.');
+    }
+
+
+    
     const { 
       userId, 
       platform, 
