@@ -7,12 +7,14 @@ const { validateUUID } = require('../utils/validation');
 const logger = require('../utils/logger');
 
 // Admin authorization middleware - Updated for new administrator role
+/*
 const authorizeAdmin = async (req, res, next) => {
   if (req.user.role !== 'administrator') {
     return res.status(403).json({ error: 'Forbidden: Administrator access required' });
   }
   next();
 };
+*/
 
 // Get system stats
 router.get('/stats', authenticate, authorizeAdmin, async (req, res, next) => {
