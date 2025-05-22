@@ -1,6 +1,6 @@
 // bootstrap/initializers/notifications.js
 const { logger } = require('../../utils/logger');
-const { notificationManager } = require('../../services/notificationManager');
+const notificationManager = require('../../services/notifications/notificationManager');
 const config = require('../../config/config');
 
 async function initializeNotifications() {

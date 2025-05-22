@@ -69,6 +69,7 @@ module.exports = {
 
   // Push Notifications
   notifications: {
+    enabled: process.env.NOTIFICATIONS_ENABLED === 'true',
     fcm: {
       enabled: !!process.env.FIREBASE_CREDENTIALS,
       credentials: process.env.FIREBASE_CREDENTIALS
