@@ -1,4 +1,4 @@
-// routes/auth.js
+// routes/auth.js - CLEAN APPROACH
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const jwt = require('jsonwebtoken');
@@ -8,12 +8,15 @@ const { Op } = require('sequelize');
 const { validateUUID } = require('../utils/validation');
 const logger = require('../utils/logger');
 const authMiddleware = require('../middleware/authentication');
-const exceptionHandler = require('../middleware/exceptionHandler');
+
+// ✅ BETTER: Direct import from exception handler
+const { asyncHandler, createOperationalError, createSystemError } = require('../middleware/exceptionHandler');
+
 const userSyncService = require('../services/sync/userSyncService');
 const notificationManager = require('../services/notifications/notificationManager');
 
 // Debug route to verify router is working
-router.get('/test', (req, res) => {
+router.get('/test', asyncHandler(async (req, res) => {
   logger.info('Test route hit: /api/v1/auth/test');
   res.json({ 
     success: true, 
@@ -23,10 +26,10 @@ router.get('/test', (req, res) => {
     originalUrl: req.originalUrl,
     route: req.route.path
   });
-});
+}));
 
 // Debug endpoint to check authentication
-router.get('/debug-auth', (req, res) => {
+router.get('/debug-auth', asyncHandler(async (req, res) => {
   res.json({
     success: true,
     headers: {
@@ -40,12 +43,12 @@ router.get('/debug-auth', (req, res) => {
       role: req.user.role || 'missing'
     } : 'No user in request'
   });
-});
+}));
 
 // Debug endpoint that requires authentication
 router.get('/debug-auth-protected',
   authMiddleware.authenticate.bind(authMiddleware),
-  (req, res) => {
+  asyncHandler(async (req, res) => {
     res.json({
       success: true,
       authenticated: true,
@@ -56,14 +59,14 @@ router.get('/debug-auth-protected',
       } : 'No user in request',
       authenticationWorked: !!req.user
     });
-  }
+  })
 );
 
 // Debug token endpoint
-router.get('/debug-token', (req, res) => {
+router.get('/debug-token', asyncHandler(async (req, res) => {
   const token = req.headers.authorization?.replace('Bearer ', '');
   if (!token) {
-    return res.status(400).json({ error: 'No token provided' });
+    throw createOperationalError('No token provided', 400, 'NO_TOKEN');
   }
   
   try {
@@ -82,12 +85,9 @@ router.get('/debug-token', (req, res) => {
       }
     });
   } catch (error) {
-    res.status(401).json({
-      success: false,
-      error: error.message
-    });
+    throw createOperationalError('Invalid token', 401, 'INVALID_TOKEN');
   }
-});
+}));
 
 /**
  * @route POST /api/v1/auth/sync
@@ -106,25 +106,40 @@ router.post('/sync',
     next();
   },
   authMiddleware.authenticateApiKey.bind(authMiddleware),
-  exceptionHandler.asyncHandler(async (req, res) => {
+  asyncHandler(async (req, res) => {
     logger.info('API Key authentication passed for /sync route');
     const { userData, authToken, signature } = req.body;
     
-    // Validate request signature
-    userSyncService.validateSyncRequest(userData, signature);
+    if (!userData) {
+      throw createOperationalError('User data is required', 400, 'MISSING_USER_DATA');
+    }
     
-    // Perform sync
-    const result = await userSyncService.syncUserFromMainApp(userData, authToken);
+    if (!signature) {
+      throw createOperationalError('Request signature is required', 400, 'MISSING_SIGNATURE');
+    }
     
-    // Log audit
-    logger.audit('user_sync', {
-      userId: result.user.id,
-      externalId: result.user.externalId,
-      source: 'main_app',
-      ip: req.ip
-    });
-    
-    res.json(result);
+    try {
+      // Validate request signature
+      userSyncService.validateSyncRequest(userData, signature);
+      
+      // Perform sync
+      const result = await userSyncService.syncUserFromMainApp(userData, authToken);
+      
+      // Log audit
+      logger.audit('user_sync', {
+        userId: result.user.id,
+        externalId: result.user.externalId,
+        source: 'main_app',
+        ip: req.ip
+      });
+      
+      res.json(result);
+    } catch (error) {
+      if (error.code === 'INVALID_SIGNATURE') {
+        throw createOperationalError('Invalid request signature', 403, 'INVALID_SIGNATURE');
+      }
+      throw createSystemError('User sync failed', error);
+    }
   })
 );
 
@@ -144,30 +159,28 @@ router.post('/batch-sync',
     next();
   },
   authMiddleware.authenticateApiKey.bind(authMiddleware),
-  exceptionHandler.asyncHandler(async (req, res) => {
+  asyncHandler(async (req, res) => {
     logger.info('API Key authentication passed for /batch-sync route');
     const { users, authToken } = req.body;
     
     if (!Array.isArray(users) || users.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Users array is required'
-        }
-      });
+      throw createOperationalError('Users array is required', 400, 'INVALID_USERS_ARRAY');
     }
     
-    const result = await userSyncService.batchSyncUsers(users, authToken);
-    
-    logger.audit('batch_user_sync', {
-      count: users.length,
-      successful: result.summary.successful,
-      failed: result.summary.failed,
-      ip: req.ip
-    });
-    
-    res.json(result);
+    try {
+      const result = await userSyncService.batchSyncUsers(users, authToken);
+      
+      logger.audit('batch_user_sync', {
+        count: users.length,
+        successful: result.summary.successful,
+        failed: result.summary.failed,
+        ip: req.ip
+      });
+      
+      res.json(result);
+    } catch (error) {
+      throw createSystemError('Batch sync failed', error);
+    }
   })
 );
 
@@ -189,206 +202,157 @@ router.post('/register-device',
     });
     next();
   },
-  // Custom authentication middleware with user creation
-  async (req, res, next) => {
+  // Enhanced authentication middleware with user creation
+  asyncHandler(async (req, res, next) => {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    if (!token) {
+      logger.warn('No token provided in authentication middleware');
+      throw createOperationalError('Authentication token required', 401, 'NO_TOKEN');
+    }
+    
+    let decoded;
     try {
-      const token = req.headers.authorization?.replace('Bearer ', '');
-      if (!token) {
-        logger.warn('No token provided in authentication middleware');
-        return res.status(401).json({
-          success: false, 
-          error: { 
-            code: 'NO_TOKEN',
-            message: 'Authentication token required'
-          }
-        });
-      }
-      
       // Verify token
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
       logger.info('Token verified', { 
         hasId: !!decoded.id,
         hasUserId: !!decoded.userId,
         hasSub: !!decoded.sub
       });
-      
-      // Get user ID from token
-      const userId = decoded.id || decoded.userId || decoded.sub;
-      if (!userId) {
-        logger.error('No user ID found in token');
-        return res.status(401).json({
-          success: false,
-          error: {
-            code: 'INVALID_TOKEN',
-            message: 'No user ID in token'
-          }
-        });
-      }
-
-      // Wait for database initialization if needed
-      if (typeof db.waitForInitialization === 'function') {
-        await db.waitForInitialization();
-      }
-      
-      // Check if models are available
-      const models = typeof db.getModels === 'function' ? db.getModels() : db;
-      const User = models.User;
-      
-      if (!User) {
-        logger.error('User model not found in database models');
-        return res.status(500).json({
-          success: false,
-          error: {
-            code: 'SERVER_ERROR',
-            message: 'Server configuration error'
-          }
-        });
-      }
-
-      // Try to find user by ID first
-      let user = null;
-      try {
-        // First try by ID
-        user = await User.findByPk(userId);
-        
-        // If not found and externalId provided, try that
-        if (!user && decoded.externalId) {
-          user = await User.findOne({
-            where: { externalId: decoded.externalId }
-          });
-          logger.info('User lookup by externalId', { 
-            externalId: decoded.externalId, 
-            found: !!user 
-          });
-        }
-      } catch (dbError) {
-        logger.error('Error finding user', {
-          error: dbError.message,
-          userId,
-          externalId: decoded.externalId || 'not provided'
-        });
-      }
-      
-      // If user not found, create one
-      if (!user) {
-        logger.warn('User not found in database, creating new user', {
-          userId,
-          externalId: decoded.externalId || userId
-        });
-        
-        try {
-          // Normalize role to match database ENUM
-          let role = 'customer'; // Default
-          if (decoded.role) {
-            const normalizedRole = decoded.role.toLowerCase();
-            if (['customer', 'usta', 'administrator'].includes(normalizedRole)) {
-              role = normalizedRole;
-            } else if (normalizedRole === 'admin') {
-              role = 'administrator';
-            }
-          }
-          
-          // Create new user
-          user = await User.create({
-            id: userId,
-            externalId: decoded.externalId || userId, // Use provided externalId or fall back to userId
-            name: decoded.name || decoded.displayName || 'User',
-            phone: decoded.phone || '+00000000000', // Placeholder
-            email: decoded.email || null,
-            role: role,
-            isOnline: true,
-            lastSeen: new Date(),
-            metaData: {
-              source: 'device_registration',
-              createdAt: new Date().toISOString(),
-              tokenData: {
-                iat: decoded.iat,
-                exp: decoded.exp,
-                role: decoded.role
-              }
-            }
-          });
-          
-          logger.info('Created new user during device registration', {
-            userId: user.id,
-            externalId: user.externalId,
-            role: user.role
-          });
-        } catch (createError) {
-          logger.error('Failed to create user during device registration', {
-            error: createError.message,
-            stack: createError.stack,
-            userId,
-            code: createError.code || 'UNKNOWN'
-          });
-          
-          return res.status(500).json({
-            success: false,
-            error: {
-              code: 'USER_CREATION_FAILED',
-              message: 'Failed to create user account'
-            }
-          });
-        }
-      }
-      
-      // Set user in request
-      req.user = user;
-      req.token = token;
-      req.decodedToken = decoded;
-      
-      logger.info('User authenticated for device registration', {
-        userId: user.id,
-        userRole: user.role,
-        externalId: user.externalId
-      });
-      
-      next();
     } catch (error) {
       if (error.name === 'TokenExpiredError') {
-        logger.warn('Expired token in device registration', {
-          error: error.message
-        });
-        
-        return res.status(401).json({
-          success: false,
-          error: {
-            code: 'TOKEN_EXPIRED',
-            message: 'Authentication token has expired'
-          }
-        });
+        throw createOperationalError('Authentication token has expired', 401, 'TOKEN_EXPIRED');
       }
-      
       if (error.name === 'JsonWebTokenError') {
-        logger.warn('Invalid token in device registration', {
-          error: error.message
+        throw createOperationalError('Invalid authentication token', 401, 'INVALID_TOKEN');
+      }
+      throw createSystemError('Token verification failed', error);
+    }
+    
+    // Get user ID from token
+    const userId = decoded.id || decoded.userId || decoded.sub;
+    if (!userId) {
+      logger.error('No user ID found in token');
+      throw createOperationalError('No user ID in token', 401, 'INVALID_TOKEN_STRUCTURE');
+    }
+
+    // Wait for database initialization if needed
+    if (typeof db.waitForInitialization === 'function') {
+      await db.waitForInitialization();
+    }
+    
+    // Check if models are available
+    const models = typeof db.getModels === 'function' ? db.getModels() : db;
+    const User = models.User;
+    
+    if (!User) {
+      logger.error('User model not found in database models');
+      throw createSystemError('Server configuration error - User model not found');
+    }
+
+    // Try to find user by ID first
+    let user = null;
+    try {
+      // First try by ID
+      user = await User.findByPk(userId);
+      
+      // If not found and externalId provided, try that
+      if (!user && decoded.externalId) {
+        user = await User.findOne({
+          where: { externalId: decoded.externalId }
         });
-        
-        return res.status(401).json({
-          success: false,
-          error: {
-            code: 'INVALID_TOKEN',
-            message: 'Invalid authentication token'
-          }
+        logger.info('User lookup by externalId', { 
+          externalId: decoded.externalId, 
+          found: !!user 
         });
       }
-      
-      logger.error('Authentication error in device registration', {
-        error: error.message,
-        stack: error.stack,
-        name: error.name,
-        code: error.code || 'UNKNOWN'
+    } catch (dbError) {
+      logger.error('Error finding user', {
+        error: dbError.message,
+        userId,
+        externalId: decoded.externalId || 'not provided'
       });
-      
-      return res.status(401).json({
-        success: false,
-        error: {
-          code: 'AUTH_ERROR',
-          message: 'Authentication failed: ' + error.message
-        }
-      });
+      throw createSystemError('Database error during user lookup', dbError);
     }
-  },
+    
+    // If user not found, create one
+    if (!user) {
+      logger.warn('User not found in database, creating new user', {
+        userId,
+        externalId: decoded.externalId || userId
+      });
+      
+      try {
+        // Normalize role to match database ENUM
+        let role = 'customer'; // Default
+        if (decoded.role) {
+          const normalizedRole = decoded.role.toLowerCase();
+          if (['customer', 'usta', 'administrator'].includes(normalizedRole)) {
+            role = normalizedRole;
+          } else if (normalizedRole === 'admin') {
+            role = 'administrator';
+          }
+        }
+        
+        // Create new user
+        user = await User.create({
+          id: userId,
+          externalId: decoded.externalId || userId,
+          name: decoded.name || decoded.displayName || 'User',
+          phone: decoded.phone || '+00000000000',
+          email: decoded.email || null,
+          role: role,
+          isOnline: true,
+          lastSeen: new Date(),
+          metaData: {
+            source: 'device_registration',
+            createdAt: new Date().toISOString(),
+            tokenData: {
+              iat: decoded.iat,
+              exp: decoded.exp,
+              role: decoded.role
+            }
+          }
+        });
+        
+        logger.info('Created new user during device registration', {
+          userId: user.id,
+          externalId: user.externalId,
+          role: user.role
+        });
+      } catch (createError) {
+        logger.error('Failed to create user during device registration', {
+          error: createError.message,
+          stack: createError.stack,
+          userId,
+          code: createError.code || 'UNKNOWN'
+        });
+        
+        if (createError.name === 'SequelizeUniqueConstraintError') {
+          throw createOperationalError('User already exists with this ID', 409, 'USER_EXISTS');
+        }
+        
+        if (createError.name === 'SequelizeValidationError') {
+          throw createOperationalError('Invalid user data', 400, 'VALIDATION_ERROR');
+        }
+        
+        throw createSystemError('Failed to create user account', createError);
+      }
+    }
+    
+    // Set user in request
+    req.user = user;
+    req.token = token;
+    req.decodedToken = decoded;
+    
+    logger.info('User authenticated for device registration', {
+      userId: user.id,
+      userRole: user.role,
+      externalId: user.externalId
+    });
+    
+    next();
+  }),
   // Log that authentication passed
   (req, res, next) => {
     logger.info('Authentication passed for /register-device route', {
@@ -399,19 +363,13 @@ router.post('/register-device',
     next();
   },
   // Main request handler
-  async (req, res) => {
+  asyncHandler(async (req, res) => {
     // Safety check
     if (!req.user || !req.user.id) {
       logger.error('User missing in request after authentication', {
         hasUser: !!req.user
       });
-      return res.status(401).json({
-        success: false,
-        error: {
-          code: 'AUTH_FAILURE',
-          message: 'User authentication failed'
-        }
-      });
+      throw createOperationalError('User authentication failed', 401, 'AUTH_FAILURE');
     }
 
     const { 
@@ -432,13 +390,7 @@ router.post('/register-device',
         userId: req.user.id
       });
       
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Token and deviceId are required'
-        }
-      });
+      throw createOperationalError('Token and deviceId are required', 400, 'MISSING_REQUIRED_FIELDS');
     }
     
     const userId = req.user.id;
@@ -466,13 +418,7 @@ router.post('/register-device',
         hasTokenHistory: !!TokenHistory
       });
       
-      return res.status(500).json({
-        success: false,
-        error: {
-          code: 'SERVER_ERROR',
-          message: 'Server configuration error'
-        }
-      });
+      throw createSystemError('Server configuration error - Required models not found');
     }
     
     try {
@@ -571,7 +517,7 @@ router.post('/register-device',
           error: historyError.message,
           stack: historyError.stack
         });
-        // Continue despite history error
+        // Continue despite history error - this is not critical
       }
       
       // Success response
@@ -598,47 +544,23 @@ router.post('/register-device',
         code: error.code || 'UNKNOWN'
       });
       
-      // Handle specific error types
+      // Handle specific database error types
       if (error.name === 'SequelizeUniqueConstraintError') {
-        return res.status(409).json({
-          success: false,
-          error: {
-            code: 'TOKEN_EXISTS',
-            message: 'This token is already registered to another device'
-          }
-        });
+        throw createOperationalError('This token is already registered to another device', 409, 'TOKEN_EXISTS');
       }
       
       if (error.name === 'SequelizeForeignKeyConstraintError') {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'INVALID_USER',
-            message: 'Invalid user reference'
-          }
-        });
+        throw createOperationalError('Invalid user reference', 400, 'INVALID_USER');
       }
       
       if (error.name === 'SequelizeValidationError') {
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'VALIDATION_ERROR',
-            message: 'Invalid device token data',
-            details: error.errors.map(e => e.message).join(', ')
-          }
-        });
+        const details = error.errors.map(e => e.message).join(', ');
+        throw createOperationalError(`Invalid device token data: ${details}`, 400, 'VALIDATION_ERROR');
       }
       
-      res.status(500).json({
-        success: false,
-        error: {
-          code: 'REGISTRATION_FAILED',
-          message: 'Failed to register device token'
-        }
-      });
+      throw createSystemError('Failed to register device token', error);
     }
-  }
+  })
 );
 
 /**
@@ -665,7 +587,7 @@ router.delete('/device/:deviceId',
     });
     next();
   },
-  exceptionHandler.asyncHandler(async (req, res) => {
+  asyncHandler(async (req, res) => {
     const { deviceId } = req.params;
     const userId = req.user.id;
     
@@ -678,39 +600,42 @@ router.delete('/device/:deviceId',
         userId,
         deviceId
       });
-      return res.status(404).json({
-        success: false,
-        error: {
-          code: 'NOT_FOUND',
-          message: 'Device not found'
-        }
-      });
+      throw createOperationalError('Device not found', 404, 'DEVICE_NOT_FOUND');
     }
     
     // Mark as inactive instead of deleting
     await deviceToken.update({ active: false });
     
     // Log revocation
-    if (db.TokenHistory.logTokenRevocation) {
-      await db.TokenHistory.logTokenRevocation({
-        userId,
-        token: deviceToken.token,
-        tokenType: deviceToken.platform === 'ios' ? 'APN' : 'FCM',
-        reason: 'user_request',
-        revokedBy: userId
-      });
-    } else {
-      await db.TokenHistory.create({
-        userId,
-        token: deviceToken.token,
-        tokenType: deviceToken.platform === 'ios' ? 'APN' : 'FCM',
-        deviceId,
-        action: 'REVOKED',
-        metadata: {
+    try {
+      if (db.TokenHistory.logTokenRevocation) {
+        await db.TokenHistory.logTokenRevocation({
+          userId,
+          token: deviceToken.token,
+          tokenType: deviceToken.platform === 'ios' ? 'APN' : 'FCM',
           reason: 'user_request',
           revokedBy: userId
-        }
+        });
+      } else {
+        await db.TokenHistory.create({
+          userId,
+          token: deviceToken.token,
+          tokenType: deviceToken.platform === 'ios' ? 'APN' : 'FCM',
+          deviceId,
+          action: 'REVOKED',
+          metadata: {
+            reason: 'user_request',
+            revokedBy: userId
+          }
+        });
+      }
+    } catch (historyError) {
+      logger.error('Failed to log token revocation', {
+        error: historyError.message,
+        userId,
+        deviceId
       });
+      // Continue despite history error
     }
     
     logger.info('Device token revoked', {
@@ -741,26 +666,30 @@ router.get('/devices',
     next();
   },
   authMiddleware.authenticate.bind(authMiddleware),
-  exceptionHandler.asyncHandler(async (req, res) => {
+  asyncHandler(async (req, res) => {
     const userId = req.user.id;
     
-    const devices = await db.DeviceToken.findAll({
-      where: { userId, active: true },
-      attributes: [
-        'id', 
-        'deviceId', 
-        'platform', 
-        'deviceType',
-        'lastUsed',
-        'createdAt'
-      ],
-      order: [['lastUsed', 'DESC']]
-    });
-    
-    res.json({
-      success: true,
-      devices
-    });
+    try {
+      const devices = await db.DeviceToken.findAll({
+        where: { userId, active: true },
+        attributes: [
+          'id', 
+          'deviceId', 
+          'platform', 
+          'deviceType',
+          'lastUsed',
+          'createdAt'
+        ],
+        order: [['lastUsed', 'DESC']]
+      });
+      
+      res.json({
+        success: true,
+        devices
+      });
+    } catch (error) {
+      throw createSystemError('Failed to retrieve devices', error);
+    }
   })
 );
 
@@ -779,23 +708,28 @@ router.post('/verify-token',
     });
     next();
   },
-  exceptionHandler.asyncHandler(async (req, res) => {
+  asyncHandler(async (req, res) => {
     const { token, deviceInfo } = req.body;
     
     if (!token) {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'INVALID_REQUEST',
-          message: 'Token is required'
-        }
-      });
+      throw createOperationalError('Token is required', 400, 'MISSING_TOKEN');
+    }
+    
+    let decoded;
+    try {
+      // Verify token
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (error) {
+      if (error.name === 'TokenExpiredError') {
+        throw createOperationalError('Token has expired', 401, 'TOKEN_EXPIRED');
+      }
+      if (error.name === 'JsonWebTokenError') {
+        throw createOperationalError('Invalid token', 401, 'INVALID_TOKEN');
+      }
+      throw createSystemError('Token verification failed', error);
     }
     
     try {
-      // Verify token
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      
       // Sync user from main app
       const syncData = {
         appUserId: decoded.id || decoded.userId || decoded.sub,
@@ -825,6 +759,7 @@ router.post('/verify-token',
             userId: syncResult.user.id,
             error: error.message
           });
+          // Continue despite device sync failure
         }
       }
       
@@ -862,27 +797,7 @@ router.post('/verify-token',
         ip: req.ip
       });
       
-      if (error.name === 'TokenExpiredError') {
-        return res.status(401).json({
-          success: false,
-          error: {
-            code: 'TOKEN_EXPIRED',
-            message: 'Token has expired'
-          }
-        });
-      }
-      
-      if (error.name === 'JsonWebTokenError') {
-        return res.status(401).json({
-          success: false,
-          error: {
-            code: 'INVALID_TOKEN',
-            message: 'Invalid token'
-          }
-        });
-      }
-      
-      throw error;
+      throw createSystemError('User sync failed during token verification', error);
     }
   })
 );
@@ -903,28 +818,39 @@ router.get('/profile',
     next();
   },
   authMiddleware.authenticate.bind(authMiddleware),
-  exceptionHandler.asyncHandler(async (req, res) => {
+  asyncHandler(async (req, res) => {
     const userId = req.user.id;
     
-    const user = await db.User.findByPk(userId, {
-      attributes: [
-        'id',
-        'externalId',
-        'name',
-        'email',
-        'phone',
-        'avatar',
-        'role',
-        'isOnline',
-        'lastSeen',
-        'metaData'
-      ]
-    });
-    
-    res.json({
-      success: true,
-      user
-    });
+    try {
+      const user = await db.User.findByPk(userId, {
+        attributes: [
+          'id',
+          'externalId',
+          'name',
+          'email',
+          'phone',
+          'avatar',
+          'role',
+          'isOnline',
+          'lastSeen',
+          'metaData'
+        ]
+      });
+      
+      if (!user) {
+        throw createOperationalError('User profile not found', 404, 'USER_NOT_FOUND');
+      }
+      
+      res.json({
+        success: true,
+        user
+      });
+    } catch (error) {
+      if (error.isOperational) {
+        throw error;
+      }
+      throw createSystemError('Failed to retrieve user profile', error);
+    }
   })
 );
 
@@ -945,7 +871,7 @@ router.post('/token-history',
   },
   authMiddleware.authenticate.bind(authMiddleware),
   authMiddleware.authorize('admin'),
-  exceptionHandler.asyncHandler(async (req, res) => {
+  asyncHandler(async (req, res) => {
     const { userId, deviceId, startDate, endDate, limit = 50 } = req.body;
     
     const where = {};
@@ -968,29 +894,33 @@ router.post('/token-history',
       }
     }
     
-    const history = await db.TokenHistory.findAll({
-      where,
-      include: [
-        {
-          model: db.User,
-          as: 'user',
-          attributes: ['id', 'name', 'externalId']
-        }
-      ],
-      order: [['createdAt', 'DESC']],
-      limit: parseInt(limit)
-    });
-    
-    res.json({
-      success: true,
-      history,
-      count: history.length
-    });
+    try {
+      const history = await db.TokenHistory.findAll({
+        where,
+        include: [
+          {
+            model: db.User,
+            as: 'user',
+            attributes: ['id', 'name', 'externalId']
+          }
+        ],
+        order: [['createdAt', 'DESC']],
+        limit: parseInt(limit)
+      });
+      
+      res.json({
+        success: true,
+        history,
+        count: history.length
+      });
+    } catch (error) {
+      throw createSystemError('Failed to retrieve token history', error);
+    }
   })
 );
 
 // Debug endpoint to check what routes are registered
-router.get('/debug-routes', (req, res) => {
+router.get('/debug-routes', asyncHandler(async (req, res) => {
   const routes = [];
   
   // Function to explore router stack
@@ -1060,12 +990,12 @@ router.get('/debug-routes', (req, res) => {
     mountPath: req.baseUrl,
     app: Object.keys(req.app)
   });
-});
+}));
 
 // Test whoami endpoint
 router.get('/whoami', 
   authMiddleware.authenticate.bind(authMiddleware),
-  (req, res) => {
+  asyncHandler(async (req, res) => {
     res.json({
       success: true,
       user: {
@@ -1075,7 +1005,7 @@ router.get('/whoami',
         hasUser: !!req.user
       }
     });
-  }
+  })
 );
 
 module.exports = router;

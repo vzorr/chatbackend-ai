@@ -10,6 +10,9 @@ class ExceptionHandler {
     const errorId = uuidv4();
     const statusCode = err.statusCode || err.status || 500;
     
+    // Auto-attach Error ID to request for downstream logging
+    req.errorId = errorId;
+    
     // Log error with context
     logger.error('Request error', {
       errorId,
@@ -33,16 +36,20 @@ class ExceptionHandler {
   }
 
   /**
-   * Async error wrapper
+   * Enhanced async error wrapper with better stack trace capture
    */
   asyncHandler(fn) {
-    return (req, res, next) => {
-      Promise.resolve(fn(req, res, next)).catch(next);
+    return function asyncWrap(req, res, next) {
+      Promise.resolve(fn(req, res, next)).catch((err) => {
+        // Enhanced stack trace with route information
+        err.stack += `\nTriggered by asyncHandler at ${req.method} ${req.originalUrl}`;
+        next(err);
+      });
     };
   }
 
   /**
-   * Build error response
+   * Build error response with isOperational flag support
    */
   buildErrorResponse(err, errorId, statusCode) {
     const isProduction = process.env.NODE_ENV === 'production';
@@ -59,10 +66,16 @@ class ExceptionHandler {
       }
     };
 
+    // Enhanced error categorization with isOperational flag
+    if (!err.isOperational && isProduction) {
+      response.error.message = 'An unexpected error occurred';
+    }
+
     // Add details in non-production
     if (!isProduction) {
       response.error.details = {
         stack: err.stack,
+        isOperational: err.isOperational || false,
         ...err
       };
     }
@@ -93,8 +106,13 @@ class ExceptionHandler {
       return errorMessages[err.name];
     }
 
-    // Use provided message or default
+    // Use provided message or default based on operational status
     if (!isProduction && err.message) {
+      return err.message;
+    }
+
+    // For operational errors, show message even in production
+    if (err.isOperational && err.message) {
       return err.message;
     }
 
@@ -143,6 +161,9 @@ class ExceptionHandler {
   notFoundHandler(req, res) {
     const errorId = uuidv4();
     
+    // Auto-attach Error ID to request
+    req.errorId = errorId;
+    
     logger.warn('Route not found', {
       errorId,
       method: req.method,
@@ -163,49 +184,12 @@ class ExceptionHandler {
   }
 
   /**
-   * Domain error handler
-   */
-  domainErrorHandler(err, req, res) {
-    const errorId = uuidv4();
-    
-    logger.error('Domain error', {
-      errorId,
-      error: err,
-      domain: process.domain
-    });
-
-    try {
-      // Close server after 30 seconds
-      const killtimer = setTimeout(() => {
-        process.exit(1);
-      }, 30000);
-      killtimer.unref();
-
-      // Stop taking new requests
-      server.close();
-
-      // Try to send error response
-      res.status(500).json({
-        success: false,
-        error: {
-          id: errorId,
-          message: 'Critical server error',
-          code: 'DOMAIN_ERROR',
-          statusCode: 500
-        }
-      });
-    } catch (err2) {
-      logger.error('Error sending 500 response', { error: err2 });
-    }
-  }
-
-  /**
-   * Unhandled rejection handler
+   * Unhandled rejection handler (replaces deprecated domain handler)
    */
   unhandledRejectionHandler(reason, promise) {
     logger.error('Unhandled Promise Rejection', {
       reason,
-      promise,
+      promise: promise.toString(),
       stack: reason?.stack
     });
 
@@ -230,12 +214,12 @@ class ExceptionHandler {
   }
 
   /**
-   * Initialize exception handlers
+   * Initialize exception handlers (enhanced, no deprecated domain usage)
    */
   initialize(server) {
-    // Domain error handling (deprecated but still useful)
-    process.on('uncaughtException', this.uncaughtExceptionHandler);
-    process.on('unhandledRejection', this.unhandledRejectionHandler);
+    // Modern error handler setup (no deprecated domain)
+    process.on('uncaughtException', this.uncaughtExceptionHandler.bind(this));
+    process.on('unhandledRejection', this.unhandledRejectionHandler.bind(this));
 
     // Graceful shutdown
     const gracefulShutdown = (signal) => {
@@ -255,7 +239,40 @@ class ExceptionHandler {
 
     process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
     process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+    logger.info('✅ Enhanced exception handlers initialized');
+  }
+
+  /**
+   * Helper method to create operational errors
+   */
+  static createOperationalError(message, statusCode = 400, code = null) {
+    const err = new Error(message);
+    err.statusCode = statusCode;
+    err.code = code;
+    err.isOperational = true;
+    return err;
+  }
+
+  /**
+   * Helper method to create system errors
+   */
+  static createSystemError(message, originalError = null) {
+    const err = new Error(message);
+    err.statusCode = 500;
+    err.code = 'SYSTEM_ERROR';
+    err.isOperational = false;
+    err.originalError = originalError;
+    return err;
   }
 }
 
-module.exports = new ExceptionHandler();
+// Export the singleton instance
+const exceptionHandlerInstance = new ExceptionHandler();
+
+// Also export the class and utilities for direct access
+module.exports = exceptionHandlerInstance;
+module.exports.ExceptionHandler = ExceptionHandler;
+module.exports.asyncHandler = exceptionHandlerInstance.asyncHandler.bind(exceptionHandlerInstance);
+module.exports.createOperationalError = ExceptionHandler.createOperationalError;
+module.exports.createSystemError = ExceptionHandler.createSystemError;

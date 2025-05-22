@@ -8,6 +8,8 @@ const userRoutes = require('../../routes/user');  // Changed from 'users' to 'us
 const conversationRoutes = require('../../routes/conversation');  // Changed from 'conversations'
 const messageRoutes = require('../../routes/message');  // Changed from 'messages'
 const adminRoutes = require('../../routes/admin');
+const notificationsRoutes = require('../../routes/notification');
+
 
 async function setupRoutes(app) {
   const startTime = Date.now();

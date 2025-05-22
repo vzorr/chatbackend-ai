@@ -8,10 +8,12 @@ try {
   const { logger } = require('./utils/logger');
   const config = require('./config/config');
   const bootstrap = require('./bootstrap');
+  // ✅ ADDED: Import exception handler
+  const exceptionHandler = require('./middleware/exceptionHandler');
 
   console.log('✅ Dependencies loaded successfully');
 
-  // Process-level event handlers (these run for both primary and worker processes)
+  // ✅ ENHANCED: Process-level event handlers with better error handling
   process.on('uncaughtException', (err) => {
     console.error('💥 Uncaught Exception:', err);
     if (logger) {
@@ -21,18 +23,21 @@ try {
         code: err.code
       });
     }
-    process.exit(1);
+    // ✅ ENHANCED: Use exception handler's method
+    exceptionHandler.uncaughtExceptionHandler(err);
   });
 
-  process.on('unhandledRejection', (reason) => {
+  process.on('unhandledRejection', (reason, promise) => {
     console.error('💥 Unhandled Rejection:', reason);
     if (logger) {
       logger.error(`💥 Unhandled Rejection`, { 
         reason: reason.message || reason,
-        stack: reason.stack || 'No stack trace available'
+        stack: reason.stack || 'No stack trace available',
+        promise: promise.toString()
       });
     }
-    process.exit(1);
+    // ✅ ENHANCED: Use exception handler's method
+    exceptionHandler.unhandledRejectionHandler(reason, promise);
   });
 
   async function main() {
@@ -62,6 +67,42 @@ try {
       // Worker process or single-process mode continues here
       const { app, server, io } = result;
 
+      // ✅ ADDED: Initialize exception handler with server instance
+      exceptionHandler.initialize(server);
+      logger.info('✅ Exception handler initialized with server instance');
+
+      // ✅ ENHANCED: Additional error handling for the server instance
+      server.on('error', (error) => {
+        if (error.code === 'EADDRINUSE') {
+          logger.error(`❌ Port ${config.server.port} is already in use`);
+          process.exit(1);
+        } else if (error.code === 'EACCES') {
+          logger.error(`❌ Permission denied to bind to port ${config.server.port}`);
+          process.exit(1);
+        } else {
+          logger.error('❌ Server error', {
+            error: error.message,
+            code: error.code,
+            stack: error.stack
+          });
+        }
+      });
+
+      // ✅ ENHANCED: Server connection monitoring
+      server.on('connection', (socket) => {
+        logger.debug('🔌 New connection established', {
+          remoteAddress: socket.remoteAddress,
+          remotePort: socket.remotePort
+        });
+        
+        socket.on('error', (err) => {
+          logger.warn('⚠️ Socket error', {
+            error: err.message,
+            remoteAddress: socket.remoteAddress
+          });
+        });
+      });
+
       logger.info('✅ Application started successfully', {
         url: `http://${config.server.host}:${config.server.port}`,
         pid: process.pid,
@@ -72,6 +113,22 @@ try {
       // HTTPS warning
       if (process.env.NODE_ENV === 'production' && !process.env.SERVER_URL?.startsWith('https')) {
         logger.warn('🚨 WARNING: Server is running over HTTP in production mode. Use HTTPS (wss) for WebSocket security!');
+      }
+
+      // ✅ ENHANCED: Periodic health checks
+      if (config.monitoring?.healthCheckInterval) {
+        setInterval(() => {
+          const memUsage = process.memoryUsage();
+          logger.debug('📊 Application health check', {
+            uptime: process.uptime(),
+            memory: {
+              rss: `${Math.round(memUsage.rss / 1024 / 1024)}MB`,
+              heapUsed: `${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`,
+              heapTotal: `${Math.round(memUsage.heapTotal / 1024 / 1024)}MB`
+            },
+            connections: server.listening ? 'active' : 'inactive'
+          });
+        }, config.monitoring.healthCheckInterval);
       }
 
       // Export for testing or external use
@@ -85,9 +142,49 @@ try {
           stack: error.stack
         });
       }
+      
+      // ✅ ENHANCED: Use exception handler for startup errors
+      if (error.isOperational) {
+        logger.error('💥 Operational error during startup - exiting gracefully');
+      } else {
+        logger.error('💥 System error during startup - immediate exit required');
+      }
+      
       process.exit(1);
     }
   }
+
+  // ✅ ENHANCED: Graceful shutdown with timeout
+  const gracefulShutdown = async (signal) => {
+    logger.info(`🛑 Received ${signal}, initiating graceful shutdown...`);
+    
+    const shutdownTimeout = setTimeout(() => {
+      logger.error('❌ Graceful shutdown timeout exceeded, forcing exit');
+      process.exit(1);
+    }, 30000); // 30 second timeout
+    
+    try {
+      // If bootstrap has been initialized, cleanup
+      if (bootstrap && typeof bootstrap.cleanup === 'function') {
+        await bootstrap.cleanup();
+      }
+      
+      clearTimeout(shutdownTimeout);
+      logger.info('✅ Graceful shutdown completed');
+      process.exit(0);
+    } catch (error) {
+      logger.error('❌ Error during graceful shutdown', {
+        error: error.message,
+        stack: error.stack
+      });
+      clearTimeout(shutdownTimeout);
+      process.exit(1);
+    }
+  };
+
+  // ✅ ENHANCED: Register graceful shutdown handlers
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
   // Start the application
   if (require.main === module) {
