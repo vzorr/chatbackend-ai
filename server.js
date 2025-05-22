@@ -69,6 +69,7 @@ try {
 
       // ✅ ADDED: Initialize exception handler with server instance
       exceptionHandler.initialize(server);
+      
       logger.info('✅ Exception handler initialized with server instance');
 
       // ✅ ENHANCED: Additional error handling for the server instance

@@ -88,10 +88,7 @@ class Bootstrap {
       logger.info('✅ [Step 7/7] Shutdown handlers configured');
 
       // Step 8: Initialize notifications
-      logger.info('📋 [Step 8/8] Initializing notifications...')
-      await initializeNotifications();
-      logger.info('✅ [Step 8/8] Notifications initialized');
-      
+    
 
       const duration = Date.now() - startTime;
       logger.info('🎉 Bootstrap process completed successfully!', {

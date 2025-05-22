@@ -102,7 +102,7 @@ function setupAPIRoutes(app) {
   
   logger.info('✅ [Routes] API routes configured', {
     version: 'v1',
-    routes: ['auth', 'users', 'conversations', 'messages', 'admin']
+    routes: ['auth', 'users', 'conversations', 'messages', 'admin', 'notifications' ]
   });
 }
 
