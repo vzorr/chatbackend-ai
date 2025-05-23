@@ -21,7 +21,7 @@ module.exports = (sequelize, DataTypes) => {
     },
     receiverId: {
       type: DataTypes.UUID,
-      allowNull: false,
+      allowNull: true,
     },
     type: {
       type: DataTypes.ENUM("text", "image", "file", "emoji", "audio", "system"),
