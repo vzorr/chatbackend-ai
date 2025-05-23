@@ -82,66 +82,116 @@ router.get('/conversation/:conversationId',
       }
       
       // Get messages
-      const messages = await Message.findAll({
-        where,
-        order: [['createdAt', before ? 'DESC' : 'ASC']],
-        limit: parsedLimit
-      });
+      let messages = [];
+      try {
+        messages = await Message.findAll({
+          where,
+          order: [['createdAt', before ? 'DESC' : 'ASC']],
+          limit: parsedLimit
+        });
+      } catch (dbError) {
+        logger.error('Database error fetching messages', {
+          error: dbError.message,
+          stack: dbError.stack,
+          conversationId,
+          userId,
+          where
+        });
+        throw dbError;
+      }
       
       // Get sender details
-      const senderIds = [...new Set(messages.map(m => m.senderId))];
+      const senderIds = [...new Set(messages.map(m => m.senderId))].filter(id => id != null);
       
-      const senders = await User.findAll({
-        where: { id: { [Op.in]: senderIds } },
-        attributes: ['id', 'name', 'avatar']
-      });
+      let senders = [];
+      if (senderIds.length > 0) {
+        try {
+          senders = await User.findAll({
+            where: { id: { [Op.in]: senderIds } },
+            attributes: ['id', 'name', 'avatar']
+          });
+        } catch (userError) {
+          logger.error('Error fetching sender details', {
+            error: userError.message,
+            senderIds
+          });
+          // Continue without sender details rather than failing
+        }
+      }
       
       const senderMap = senders.reduce((map, sender) => {
-        map[sender.id] = sender.toJSON ? sender.toJSON() : sender;
+        const senderData = sender.toJSON ? sender.toJSON() : sender;
+        map[senderData.id] = senderData;
         return map;
       }, {});
       
       // Format response - Handle both Sequelize instances and plain objects
       const formattedMessages = messages.map(message => {
-        const messageData = message.toJSON ? message.toJSON() : message;
-        
-        return {
-          id: messageData.id,
-          conversationId: messageData.conversationId,
-          senderId: messageData.senderId,
-          sender: senderMap[messageData.senderId],
-          type: messageData.type,
-          content: messageData.content,
-          status: messageData.status,
-          createdAt: messageData.createdAt,
-          updatedAt: messageData.updatedAt
-        };
+        try {
+          const messageData = message.toJSON ? message.toJSON() : message;
+          
+          return {
+            id: messageData.id,
+            conversationId: messageData.conversationId,
+            senderId: messageData.senderId,
+            sender: senderMap[messageData.senderId] || null,
+            type: messageData.type || 'text',
+            content: messageData.content || {},
+            status: messageData.status || 'sent',
+            createdAt: messageData.createdAt,
+            updatedAt: messageData.updatedAt
+          };
+        } catch (formatError) {
+          logger.error('Error formatting message', {
+            error: formatError.message,
+            messageId: message.id
+          });
+          // Return a minimal message object
+          return {
+            id: message.id,
+            error: 'Failed to format message'
+          };
+        }
       });
       
       // If getting messages for first time, mark them as delivered
-      if (!before && !after) {
-        const messageIds = messages
-          .filter(m => m.senderId !== userId && m.status === 'sent')
-          .map(m => m.id);
-        
-        if (messageIds.length > 0) {
-          await queueService.enqueueDeliveryReceipt(userId, messageIds);
+      if (!before && !after && messages.length > 0) {
+        try {
+          const messageIds = messages
+            .filter(m => m.senderId !== userId && m.status === 'sent')
+            .map(m => m.id);
           
-          // Update status immediately for UI feedback
-          await Message.update(
-            { status: 'delivered' },
-            { where: { id: { [Op.in]: messageIds } } }
-          );
+          if (messageIds.length > 0) {
+            await queueService.enqueueDeliveryReceipt(userId, messageIds);
+            
+            // Update status immediately for UI feedback
+            await Message.update(
+              { status: 'delivered' },
+              { where: { id: { [Op.in]: messageIds } } }
+            );
+          }
+        } catch (deliveryError) {
+          logger.error('Error processing delivery receipts', {
+            error: deliveryError.message
+          });
+          // Continue - don't fail the request due to delivery receipt issues
         }
       }
       
       res.json({
         success: true,
-        messages: formattedMessages,
+        messages: formattedMessages.filter(m => !m.error), // Filter out any messages with errors
         limit: parsedLimit,
         hasMore: messages.length === parsedLimit
       });
     } catch (error) {
+      logger.error('Error in get conversation messages', {
+        error: error.message,
+        stack: error.stack,
+        conversationId,
+        userId
+      });
+      
       if (error.isOperational) {
         throw error;
       }
@@ -149,7 +199,6 @@ router.get('/conversation/:conversationId',
     }
   })
 );
-
 /**
  * @route GET /api/v1/messages/:id
  * @desc Get a message by ID
