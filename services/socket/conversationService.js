@@ -123,6 +123,7 @@ class ConversationService {
           })
       );
       
+      console.log ("Socket connected - returning user " + userId  + conversations);
       return conversations;
     } catch (error) {
       logger.error('Error getting user conversations', {
