@@ -2,6 +2,7 @@
 const logger = require('../../utils/logger');
 const presenceService = require('../../services/socket/presenceService');
 const conversationService = require('../../services/socket/conversationService');
+const redisService = require('../../services/redis'); // ADD THIS LINE
 
 module.exports = (io, socket) => {
   const userId = socket.user.id;

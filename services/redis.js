@@ -356,6 +356,48 @@ const ping = async () => {
   }
 };
 
+
+const getOnlineUsers = async () => {
+  try {
+    // Get all user presence keys
+    const keys = await redisClient.keys(KEY_PREFIXES.USER_PRESENCE + '*');
+    
+    if (!keys.length) return [];
+    
+    // Get all presence data
+    const pipeline = redisClient.pipeline();
+    keys.forEach(key => {
+      pipeline.get(key);
+    });
+    
+    const results = await pipeline.exec();
+    const onlineUsers = [];
+    
+    results.forEach((result, index) => {
+      const [err, data] = result;
+      if (!err && data) {
+        const presence = JSON.parse(data);
+        if (presence.isOnline) {
+          // Extract user ID from the key
+          const userId = keys[index].replace(KEY_PREFIXES.USER_PRESENCE, '');
+          onlineUsers.push({
+            userId,
+            socketId: presence.socketId,
+            updatedAt: presence.updatedAt
+          });
+        }
+      }
+    });
+    
+    return onlineUsers;
+  } catch (error) {
+    logger.error('Error getting online users', { error: error.message });
+    return [];
+  }
+};
+
+
+
 module.exports = {
   redisClient,
   setUserOnline,
@@ -377,5 +419,6 @@ module.exports = {
   KEY_PREFIXES,
   TTL,
   updateUserPresence,
-  isUserStillOnline
+  isUserStillOnline,
+   getOnlineUsers,
 };

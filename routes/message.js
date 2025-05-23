@@ -97,22 +97,26 @@ router.get('/conversation/:conversationId',
       });
       
       const senderMap = senders.reduce((map, sender) => {
-        map[sender.id] = sender;
+        map[sender.id] = sender.toJSON ? sender.toJSON() : sender;
         return map;
       }, {});
       
-      // Format response
-      const formattedMessages = messages.map(message => ({
-        id: message.id,
-        conversationId: message.conversationId,
-        senderId: message.senderId,
-        sender: senderMap[message.senderId],
-        type: message.type,
-        content: message.content,
-        status: message.status,
-        createdAt: message.createdAt,
-        updatedAt: message.updatedAt
-      }));
+      // Format response - Handle both Sequelize instances and plain objects
+      const formattedMessages = messages.map(message => {
+        const messageData = message.toJSON ? message.toJSON() : message;
+        
+        return {
+          id: messageData.id,
+          conversationId: messageData.conversationId,
+          senderId: messageData.senderId,
+          sender: senderMap[messageData.senderId],
+          type: messageData.type,
+          content: messageData.content,
+          status: messageData.status,
+          createdAt: messageData.createdAt,
+          updatedAt: messageData.updatedAt
+        };
+      });
       
       // If getting messages for first time, mark them as delivered
       if (!before && !after) {
@@ -833,12 +837,19 @@ router.post('/read',
     const { messageIds, conversationId } = req.body;
     const userId = req.user.id;
     
+    // More flexible validation
     if (!messageIds && !conversationId) {
       throw createOperationalError('Either messageIds array or conversationId is required', 400, 'MISSING_PARAMETERS');
     }
     
-    if (messageIds && (!Array.isArray(messageIds) || messageIds.length === 0)) {
-      throw createOperationalError('Message IDs must be a non-empty array', 400, 'INVALID_MESSAGE_IDS');
+    // If messageIds is provided, validate it's an array (can be empty if conversationId is provided)
+    if (messageIds !== undefined && !Array.isArray(messageIds)) {
+      throw createOperationalError('Message IDs must be an array', 400, 'INVALID_MESSAGE_IDS_FORMAT');
+    }
+    
+    // If only messageIds is provided, it must not be empty
+    if (messageIds && !conversationId && messageIds.length === 0) {
+      throw createOperationalError('Message IDs array cannot be empty when conversationId is not provided', 400, 'EMPTY_MESSAGE_IDS');
     }
     
     if (messageIds && messageIds.length > 100) {
@@ -847,7 +858,7 @@ router.post('/read',
     
     try {
       // Queue read receipt for processing
-      await queueService.enqueueReadReceipt(userId, messageIds, conversationId);
+      await queueService.enqueueReadReceipt(userId, messageIds || [], conversationId);
       
       let updatedCount = 0;
       
