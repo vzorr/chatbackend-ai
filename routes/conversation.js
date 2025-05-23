@@ -1,20 +1,25 @@
-// routes/conversations.js - CLEAN APPROACH
+// routes/conversations.js - LAZY DB LOADING APPROACH
 const express = require('express');
 const router = express.Router();
 const { Op } = require('sequelize');
 const { v4: uuidv4 } = require('uuid');
-const { 
-  Conversation, 
-  ConversationParticipant, 
-  Message, 
-  User 
-} = require('../db/models');
+const logger = require('../utils/logger');
+
+// Remove direct model imports - use lazy loading instead
+// const { 
+//   Conversation, 
+//   ConversationParticipant, 
+//   Message, 
+//   User 
+// } = require('../db/models');
+
 const { authenticate } = require('../middleware/authentication');
 const redisService = require('../services/redis');
 const queueService = require('../services/queue/queueService');
 
 // ✅ BETTER: Direct import from exception handler
 const { asyncHandler, createOperationalError, createSystemError } = require('../middleware/exceptionHandler');
+
 
 // Get all conversations for current user
 router.get('/', 
@@ -23,20 +28,75 @@ router.get('/',
     const { limit = 20, offset = 0 } = req.query;
     const userId = req.user.id;
     
+    logger.info('GET /conversations - Starting request', {
+      userId,
+      limit,
+      offset,
+      userObject: req.user
+    });
+    
     // Validate query parameters
     const parsedLimit = parseInt(limit);
     const parsedOffset = parseInt(offset);
     
     if (isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 100) {
+      logger.error('Invalid limit parameter', { limit, parsedLimit });
       throw createOperationalError('Limit must be a number between 1 and 100', 400, 'INVALID_LIMIT');
     }
     
     if (isNaN(parsedOffset) || parsedOffset < 0) {
+      logger.error('Invalid offset parameter', { offset, parsedOffset });
       throw createOperationalError('Offset must be a non-negative number', 400, 'INVALID_OFFSET');
     }
     
+    console.log("loading database models for current users conversations");
+    logger.info('Loading database models', { userId });
+
     try {
+      // Import db and get models dynamically
+      const db = require('../db/models');
+      const { Conversation, ConversationParticipant, Message, User } = db;
+      
+      logger.info('Database models loaded', {
+        hasDb: !!db,
+        modelKeys: Object.keys(db || {}),
+        hasConversation: !!Conversation,
+        hasConversationParticipant: !!ConversationParticipant,
+        hasMessage: !!Message,
+        hasUser: !!User
+      });
+      
+      // Check if models exist
+      if (!Conversation || !ConversationParticipant || !Message || !User) {
+        logger.error('Models not initialized', {
+          hasConversation: !!Conversation,
+          hasConversationParticipant: !!ConversationParticipant,
+          hasMessage: !!Message,
+          hasUser: !!User
+        });
+        throw new Error('Database models not initialized');
+      }
+      
+      console.log("conversation model initialized - loading database models for current users conversations");
+      logger.info('All models initialized successfully');
+      
+      // First, let's check if the user exists in ConversationParticipant table
+      const userParticipationCount = await ConversationParticipant.count({
+        where: { userId }
+      });
+      
+      logger.info('User participation count', {
+        userId,
+        totalParticipations: userParticipationCount
+      });
+      
       // Get user's conversations
+      logger.info('Fetching participations', {
+        userId,
+        limit: parsedLimit,
+        offset: parsedOffset
+      });
+      
       const participations = await ConversationParticipant.findAll({
         where: { userId },
         include: [{
@@ -54,30 +114,96 @@ router.get('/',
         offset: parsedOffset
       });
       
+      logger.info('Participations query completed', {
+        userId,
+        participationsFound: participations.length,
+        hasParticipations: participations && participations.length > 0
+      });
+      
+      console.log("participants found: " + participations.length);
+      
+      // Log each participation details
+      participations.forEach((participation, index) => {
+        logger.info(`Participation ${index}`, {
+          participationId: participation.id,
+          userId: participation.userId,
+          conversationId: participation.conversationId,
+          hasConversation: !!participation.conversation,
+          conversationData: participation.conversation ? {
+            id: participation.conversation.id,
+            jobId: participation.conversation.jobId,
+            participantIds: participation.conversation.participantIds,
+            messagesCount: participation.conversation.messages ? participation.conversation.messages.length : 0
+          } : null
+        });
+      });
+      
       // Get unread counts
+      logger.info('Fetching unread counts from Redis', { userId });
       const unreadCounts = await redisService.getUnreadCounts(userId);
+      logger.info('Unread counts retrieved', {
+        userId,
+        unreadCountsKeys: Object.keys(unreadCounts || {}),
+        unreadCounts
+      });
       
       // Format response
-      const conversations = await Promise.all(participations.map(async (participation) => {
+      logger.info('Starting to format conversations');
+      const conversations = await Promise.all(participations.map(async (participation, index) => {
         const conversation = participation.conversation;
         
+        logger.info(`Processing conversation ${index}`, {
+          hasConversation: !!conversation,
+          conversationId: conversation?.id
+        });
+        
         if (!conversation) {
+          logger.warn(`Skipping participation ${index} - no conversation object`, {
+            participationId: participation.id,
+            participationData: participation.toJSON()
+          });
           return null; // Skip invalid participations
         }
         
         // Get participant details
         const participantIds = conversation.participantIds || [];
+        logger.info(`Conversation ${conversation.id} participant IDs`, {
+          conversationId: conversation.id,
+          participantIds,
+          participantCount: participantIds.length
+        });
+        
         if (participantIds.length === 0) {
+          logger.warn(`Skipping conversation ${conversation.id} - no participants`, {
+            conversationId: conversation.id,
+            conversationData: conversation.toJSON()
+          });
           return null; // Skip conversations with no participants
         }
+        
+        logger.info(`Fetching participant users for conversation ${conversation.id}`, {
+          conversationId: conversation.id,
+          participantIds
+        });
         
         const participantUsers = await User.findAll({
           where: { id: { [Op.in]: participantIds } },
           attributes: ['id', 'name', 'avatar']
         });
         
+        logger.info(`Found participant users for conversation ${conversation.id}`, {
+          conversationId: conversation.id,
+          foundUsers: participantUsers.length,
+          userIds: participantUsers.map(u => u.id)
+        });
+        
         // Get presence info
+        logger.info(`Fetching presence info for conversation ${conversation.id}`);
         const presenceMap = await redisService.getUsersPresence(participantIds);
+        logger.info(`Presence info retrieved for conversation ${conversation.id}`, {
+          conversationId: conversation.id,
+          presenceKeys: Object.keys(presenceMap || {})
+        });
         
         // Enrich participant data
         const participants = participantUsers.map(user => {
@@ -89,7 +215,7 @@ router.get('/',
           };
         });
         
-        return {
+        const conversationData = {
           id: conversation.id,
           jobId: conversation.jobId,
           jobTitle: conversation.jobTitle,
@@ -98,23 +224,74 @@ router.get('/',
           unreadCount: unreadCounts[conversation.id] || participation.unreadCount || 0,
           lastMessage: conversation.messages && conversation.messages[0] ? conversation.messages[0] : null
         };
+        
+        logger.info(`Formatted conversation ${conversation.id}`, {
+          conversationId: conversation.id,
+          hasLastMessage: !!conversationData.lastMessage,
+          participantCount: conversationData.participants.length,
+          unreadCount: conversationData.unreadCount
+        });
+        
+        return conversationData;
       }));
       
       // Filter out null conversations
       const validConversations = conversations.filter(conv => conv !== null);
       
-      res.json({
+      logger.info('Conversation formatting completed', {
+        totalProcessed: conversations.length,
+        validConversations: validConversations.length,
+        nullConversations: conversations.length - validConversations.length
+      });
+      
+      const responseData = {
         success: true,
         conversations: validConversations,
         limit: parsedLimit,
         offset: parsedOffset,
         hasMore: participations.length === parsedLimit
+      };
+      
+      logger.info('Sending response', {
+        userId,
+        conversationCount: validConversations.length,
+        hasMore: responseData.hasMore
       });
+      
+      res.json(responseData);
+      
     } catch (error) {
+      logger.error('Error in GET /conversations - detailed', {
+        errorMessage: error.message,
+        errorStack: error.stack,
+        errorName: error.name,
+        userId,
+        originalError: error,
+        errorType: error.constructor.name,
+        isOperational: error.isOperational
+      });
+      
+      // Log specific database errors
+      if (error.name === 'SequelizeDatabaseError') {
+        logger.error('Database error details', {
+          sql: error.sql,
+          parameters: error.parameters,
+          table: error.table,
+          fields: error.fields
+        });
+      }
+      
+      // Throw the original error if it's operational
+      if (error.isOperational) {
+        throw error;
+      }
+      
+      // Otherwise wrap it
       throw createSystemError('Failed to retrieve conversations', error);
     }
   })
 );
+
 
 // Get single conversation
 router.get('/:id', 
@@ -128,6 +305,21 @@ router.get('/:id',
     }
     
     try {
+      // Lazy load models
+      const db = require('../db/models');
+      const { Conversation, ConversationParticipant, Message, User } = db;
+      
+      // Check if models exist
+      if (!Conversation || !ConversationParticipant || !Message || !User) {
+        logger.error('Models not initialized in GET /:id', {
+          hasConversation: !!Conversation,
+          hasConversationParticipant: !!ConversationParticipant,
+          hasMessage: !!Message,
+          hasUser: !!User
+        });
+        throw new Error('Database models not initialized');
+      }
+      
       // Verify user is a participant
       const participation = await ConversationParticipant.findOne({
         where: { conversationId: id, userId }
@@ -226,6 +418,19 @@ router.post('/',
     }
     
     try {
+      // Lazy load models
+      const db = require('../db/models');
+      const { ConversationParticipant, User } = db;
+      
+      // Check if models exist
+      if (!ConversationParticipant || !User) {
+        logger.error('Models not initialized in POST /', {
+          hasConversationParticipant: !!ConversationParticipant,
+          hasUser: !!User
+        });
+        throw new Error('Database models not initialized');
+      }
+      
       // Ensure current user is included
       const allParticipantIds = [...new Set([userId, ...participantIds])];
       
@@ -334,6 +539,20 @@ router.post('/:id/participants',
     }
     
     try {
+      // Lazy load models
+      const db = require('../db/models');
+      const { Conversation, ConversationParticipant, User } = db;
+      
+      // Check if models exist
+      if (!Conversation || !ConversationParticipant || !User) {
+        logger.error('Models not initialized in POST /:id/participants', {
+          hasConversation: !!Conversation,
+          hasConversationParticipant: !!ConversationParticipant,
+          hasUser: !!User
+        });
+        throw new Error('Database models not initialized');
+      }
+      
       // Verify user is a participant
       const participation = await ConversationParticipant.findOne({
         where: { conversationId: id, userId }
@@ -454,6 +673,20 @@ router.delete('/:id/participants/:participantId',
     }
     
     try {
+      // Lazy load models
+      const db = require('../db/models');
+      const { Conversation, ConversationParticipant, User } = db;
+      
+      // Check if models exist
+      if (!Conversation || !ConversationParticipant || !User) {
+        logger.error('Models not initialized in DELETE /:id/participants/:participantId', {
+          hasConversation: !!Conversation,
+          hasConversationParticipant: !!ConversationParticipant,
+          hasUser: !!User
+        });
+        throw new Error('Database models not initialized');
+      }
+      
       // Verify current user is a participant
       const participation = await ConversationParticipant.findOne({
         where: { conversationId: id, userId }
@@ -552,6 +785,19 @@ router.post('/:id/read',
     }
     
     try {
+      // Lazy load models
+      const db = require('../db/models');
+      const { ConversationParticipant, Message } = db;
+      
+      // Check if models exist
+      if (!ConversationParticipant || !Message) {
+        logger.error('Models not initialized in POST /:id/read', {
+          hasConversationParticipant: !!ConversationParticipant,
+          hasMessage: !!Message
+        });
+        throw new Error('Database models not initialized');
+      }
+      
       // Verify user is a participant
       const participation = await ConversationParticipant.findOne({
         where: { conversationId: id, userId }
@@ -612,6 +858,19 @@ router.delete('/:id',
     }
     
     try {
+      // Lazy load models
+      const db = require('../db/models');
+      const { Conversation, ConversationParticipant } = db;
+      
+      // Check if models exist
+      if (!Conversation || !ConversationParticipant) {
+        logger.error('Models not initialized in DELETE /:id', {
+          hasConversation: !!Conversation,
+          hasConversationParticipant: !!ConversationParticipant
+        });
+        throw new Error('Database models not initialized');
+      }
+      
       // Verify user is a participant
       const participation = await ConversationParticipant.findOne({
         where: { conversationId: id, userId }
