@@ -40,7 +40,7 @@ class MessageService {
       const finalAudio = audioFile || audio;
 
       const messageData = {
-        id: messageId,
+        id: uuidv4(),
         conversationId: targetConversationId,
         jobId,
         senderId: userId,
