@@ -10,6 +10,7 @@ class MessageService {
   async handleSendMessage(io, socket, payload) {
     // Extract and validate payload
     const {
+      jobId = payload.jobId,
       messageId = uuidv4(),//, clientTempId, jobId,
       receiverId, conversationId, messageType = 'text',
       textMsg, text, messageImages = [], images = [],
