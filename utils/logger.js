@@ -4,6 +4,7 @@ const DailyRotateFile = require('winston-daily-rotate-file');
 const { ElasticsearchTransport } = require('winston-elasticsearch');
 const path = require('path');
 const config = require('../config/config');
+const flatten = require('flat'); // ✅ Added for flattening
 
 class EnterpriseLogger {
   constructor() {
@@ -91,14 +92,14 @@ class EnterpriseLogger {
           },
           indexPrefix: config.logging?.elasticsearch?.indexPrefix || 'chat-server-logs',
           dataStream: true,
-          // Add custom transformer for Elasticsearch to ensure proper timestamp format
+          // ✅ Updated transformer using flatten
           transformer: (logData) => {
-            // Ensure timestamp is in ISO format
+            const flattened = flatten(logData, { safe: true });
             return {
               '@timestamp': new Date(logData.timestamp).toISOString(),
               message: logData.message,
               severity: logData.level,
-              fields: logData
+              fields: flattened
             };
           }
         }));
