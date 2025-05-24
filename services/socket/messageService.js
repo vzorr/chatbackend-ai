@@ -118,6 +118,15 @@ class MessageService {
 
     io.to(`conversation:${targetConversationId}`).emit('new_message', messageWithSender);
 
+    console.log('🚀 About to emit message_sent with data:', {
+    id: message.id,
+    messageId: message.id,
+    clientTempId,
+    tempId: clientTempId,
+    conversationId: targetConversationId,
+    timestamp: Date.now()
+    });
+
     // ✅ Emit both for frontend compatibility
     socket.emit('message_sent', {
       id: message.id,
