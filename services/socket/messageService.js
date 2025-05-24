@@ -7,111 +7,140 @@ const redisService = require('../redis');
 const logger = require('../../utils/logger');
 
 class MessageService {
+
+
   async handleSendMessage(io, socket, payload) {
-    // Extract and validate payload
-    const {
-      jobId = payload.jobId,
-      messageId = uuidv4(), clientTempId,
-      receiverId, conversationId, messageType = 'text',
-      textMsg, text, messageImages = [], images = [],
-      audioFile = '', audio = '', replyToMessageId = null, attachments = []
-    } = payload;
+  // Extract and validate payload
+  const {
+    jobId = payload.jobId,
+    messageId = uuidv4(),
+    clientTempId,
+    receiverId,
+    conversationId,
+    messageType = 'text',
+    textMsg,
+    text,
+    messageImages = [],
+    images = [],
+    audioFile = '',
+    audio = '',
+    replyToMessageId = null,
+    attachments = []
+  } = payload;
 
-    const userId = socket.user.id;
-    let targetConversationId = conversationId;
+  const userId = socket.user.id;
+  let targetConversationId = conversationId;
 
-    try {
-      const models = db.getModels();
-      const { Message, MessageVersion, Conversation, ConversationParticipant } = models;
+  try {
+    const models = db.getModels();
+    const { Message, MessageVersion, Conversation, ConversationParticipant } = models;
 
-      if (!Message || !Conversation || !ConversationParticipant) {
-        throw new Error('Required models not initialized');
-      }
-
-      // Determine conversation or create one
-      if (!targetConversationId && receiverId) {
-        targetConversationId = await this.ensureDirectConversation(userId, receiverId);
-        socket.join(`conversation:${targetConversationId}`);
-      }
-
-      const finalTextContent = textMsg || text || '';
-      const finalImages = messageImages.length ? messageImages : images;
-      const finalAudio = audioFile || audio;
-
-      const messageData = {
-        id: messageId,
-        conversationId: targetConversationId,
-        jobId,
-        senderId: userId,
-        receiverId: receiverId || null,
-        type: messageType,
-        content: {
-          text: finalTextContent,
-          images: finalImages,
-          audio: finalAudio,
-          replyTo: replyToMessageId,
-          attachments
-        },
-        status: 'sent',
-        clientTempId, //client temp id :TODO fix
-        deleted: false,
-        createdAt: new Date(),
-        updatedAt: new Date()
-      };
-
-
-      // ✅ Clean, structured log
-      console.log('🧾 Prepared messageData for DB insert:', {
-        id: messageData.id,
-        clientTempId: messageData.clientTempId,
-        conversationId: messageData.conversationId,
-        jobId: messageData.jobId,
-        senderId: messageData.senderId,
-        receiverId: messageData.receiverId,
-        type: messageData.type,
-        content: messageData.content,
-        status: messageData.status,
-        deleted: messageData.deleted,
-        createdAt: messageData.createdAt,
-        updatedAt: messageData.updatedAt
-      });
-
-      // Create message directly in database and queue for additional processing
-      const message = await Message.create(messageData);
-      await queueService.enqueueMessage(messageData);
-
-      // Update conversation
-      await Conversation.update(
-        { lastMessageAt: new Date() },
-        { where: { id: targetConversationId } }
-      );
-
-      // Unread count update
-      await ConversationParticipant.increment(
-        'unreadCount',
-        { where: { conversationId: targetConversationId, userId: { [Op.ne]: userId } } }
-      );
-
-      const sender = {
-        id: userId,
-        name: socket.user.name,
-        avatar: socket.user.avatar
-      };
-
-      const messageWithSender = { ...messageData, sender };
-      io.to(`conversation:${targetConversationId}`).emit('new_message', messageWithSender);
-      socket.emit('message_sent', { id: messageId, clientTempId, conversationId: targetConversationId, timestamp: Date.now() });
-
-      return { message, participants: await this.getOtherParticipants(targetConversationId, userId), notifyRecipients: true };
-    } catch (error) {
-      logger.error('Error handling send message', {
-        userId,
-        error: error.message,
-        stack: error.stack
-      });
-      throw error;
+    if (!Message || !Conversation || !ConversationParticipant) {
+      throw new Error('Required models not initialized');
     }
+
+    // Determine conversation or create one
+    if (!targetConversationId && receiverId) {
+      targetConversationId = await this.ensureDirectConversation(userId, receiverId);
+      socket.join(`conversation:${targetConversationId}`);
+    }
+
+    const finalTextContent = textMsg || text || '';
+    const finalImages = messageImages.length ? messageImages : images;
+    const finalAudio = audioFile || audio;
+
+    const isTempId = typeof messageId === 'string' && messageId.startsWith('temp-');
+    const safeMessageId = isTempId ? undefined : messageId;
+
+    const messageData = {
+      ...(safeMessageId && { id: safeMessageId }), // ✅ only include if valid UUID
+      conversationId: targetConversationId,
+      jobId,
+      senderId: userId,
+      receiverId: receiverId || null,
+      type: messageType,
+      content: {
+        text: finalTextContent,
+        images: finalImages,
+        audio: finalAudio,
+        replyTo: replyToMessageId,
+        attachments
+      },
+      status: 'sent',
+      clientTempId, // ✅ used for frontend matching
+      deleted: false,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    // ✅ Clean, structured log
+    console.log('🧾 Prepared messageData for DB insert:', {
+      id: messageData.id || '[auto-generated]',
+      clientTempId: messageData.clientTempId,
+      conversationId: messageData.conversationId,
+      jobId: messageData.jobId,
+      senderId: messageData.senderId,
+      receiverId: messageData.receiverId,
+      type: messageData.type,
+      content: messageData.content,
+      status: messageData.status,
+      deleted: messageData.deleted,
+      createdAt: messageData.createdAt,
+      updatedAt: messageData.updatedAt
+    });
+
+    // Create message directly in database and queue for additional processing
+    const message = await Message.create(messageData);
+    await queueService.enqueueMessage(messageData);
+
+    // Update conversation
+    await Conversation.update(
+      { lastMessageAt: new Date() },
+      { where: { id: targetConversationId } }
+    );
+
+    // Unread count update
+    await ConversationParticipant.increment(
+      'unreadCount',
+      { where: { conversationId: targetConversationId, userId: { [Op.ne]: userId } } }
+    );
+
+    const sender = {
+      id: userId,
+      name: socket.user.name,
+      avatar: socket.user.avatar
+    };
+
+    const messageWithSender = { ...messageData, id: message.id, sender };
+
+    io.to(`conversation:${targetConversationId}`).emit('new_message', messageWithSender);
+
+    // ✅ Emit both for frontend compatibility
+    socket.emit('message_sent', {
+      id: message.id,
+      messageId: message.id,
+      tempId: clientTempId,
+      clientTempId,
+      conversationId: targetConversationId,
+      timestamp: Date.now()
+    });
+
+    return {
+      message,
+      participants: await this.getOtherParticipants(targetConversationId, userId),
+      notifyRecipients: true
+    };
+  } catch (error) {
+    logger.error('Error handling send message', {
+      userId,
+      error: error.message,
+      stack: error.stack
+    });
+    throw error;
   }
+}
+
+
 
   async ensureDirectConversation(userId, receiverId) {
     try {
