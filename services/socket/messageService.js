@@ -11,8 +11,7 @@ class MessageService {
     // Extract and validate payload
     const {
       jobId = payload.jobId,
-      clientTempId = payload.id,
-      messageId = uuidv4(),//, clientTempId, jobId,
+      messageId = uuidv4(), clientTempId, jobId,
       receiverId, conversationId, messageType = 'text',
       textMsg, text, messageImages = [], images = [],
       audioFile = '', audio = '', replyToMessageId = null, attachments = []
@@ -40,7 +39,7 @@ class MessageService {
       const finalAudio = audioFile || audio;
 
       const messageData = {
-        id: uuidv4(),
+        id: messageId,
         conversationId: targetConversationId,
         jobId,
         senderId: userId,
@@ -54,7 +53,7 @@ class MessageService {
           attachments
         },
         status: 'sent',
-        UUID, //client temp id :TODO fix
+        clientTempId, //client temp id :TODO fix
         deleted: false,
         createdAt: new Date(),
         updatedAt: new Date()
