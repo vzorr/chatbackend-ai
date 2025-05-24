@@ -107,21 +107,21 @@ class EnterpriseLogger {
           indexPrefix: config.logging?.elasticsearch?.indexPrefix || 'chat-server-logs',
           dataStream: true,
           // ✅ Updated transformer to avoid meta.* nesting
-          transformer: (logData) => {
-            const { timestamp, level, message, ...rest } = logData;
-            const flattened = flattenObject(rest);
-            return {
-              '@timestamp': new Date(timestamp || new Date()).toISOString(),
-              message,
-              severity: level,
-              fields: {
-                message,
-                level,
-                timestamp: new Date(timestamp || new Date()).toISOString(),
-                ...flattened
-              }
-            };
-          }
+     transformer: (logData) => {
+  const { timestamp, level, message, ...rest } = logData;
+
+  // Flatten everything including 'meta' and nested fields
+  const flattened = flattenObject({ ...rest, timestamp, level, message });
+
+  return {
+    '@timestamp': new Date(timestamp || new Date()).toISOString(),
+    message,
+    severity: level,
+    fields: {
+      ...flattened
+    }
+  };
+}
         }));
       } catch (error) {
         console.warn('Failed to initialize Elasticsearch transport:', error.message);
