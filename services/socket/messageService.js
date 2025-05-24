@@ -13,11 +13,11 @@ class MessageService {
   // Extract and validate payload
 
   console.log('📥 Incoming payload:', JSON.stringify(payload, null, 2));
-  
+
   const {
     jobId = payload.jobId,
     messageId = uuidv4(),
-    clientTempId = messageId, // ✅ fallback to messageId if not sent separately
+    clientTempId = payload.clientTempId || payload.id || null, // ✅ Accept string temp ID from client
     receiverId,
     conversationId,
     messageType = 'text',
@@ -122,8 +122,8 @@ class MessageService {
     socket.emit('message_sent', {
       id: message.id,
       messageId: message.id,
-      tempId: clientTempId,
       clientTempId,
+      tempId: clientTempId,
       conversationId: targetConversationId,
       timestamp: Date.now()
     });
