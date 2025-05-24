@@ -1,7 +1,7 @@
 // utils/logger.js
 const winston = require('winston');
 const DailyRotateFile = require('winston-daily-rotate-file');
-const { ElasticsearchTransport } = require('winston-elasticsearch');
+// const { ElasticsearchTransport } = require('winston-elasticsearch');
 const path = require('path');
 const config = require('../config/config');
 
@@ -97,58 +97,58 @@ class EnterpriseLogger {
     }));
 
     // Optional Elasticsearch transport
-    if (config.logging?.elasticsearch?.enabled && config.logging?.elasticsearch?.url) {
-      try {
-        transports.push(new ElasticsearchTransport({
-          level: config.logging?.level || 'info',
-          clientOpts: {
-            node: config.logging.elasticsearch.url,
-            auth: config.logging.elasticsearch.user ? {
-              username: config.logging.elasticsearch.user,
-              password: config.logging.elasticsearch.password
-            } : undefined,
-            tls: {
-              rejectUnauthorized: false
-            }
-          },
-          indexPrefix: config.logging?.elasticsearch?.indexPrefix || 'chat-server-logs',
-          dataStream: true,
-          transformer: (logData) => {
-            const { timestamp, level, message, ...meta } = logData;
-            
-            // Get context from the logger instance
-            const currentContext = this.getCurrentContext();
-            
-            // Merge all metadata
-            const allMeta = {
-              ...currentContext,
-              ...meta,
-              environment: process.env.NODE_ENV || 'development',
-              service: 'vortexhive-chat',
-              version: process.env.npm_package_version || '1.0.0'
-            };
-            
-            // Remove duplicate fields that would conflict
-            delete allMeta.timestamp;
-            delete allMeta.level;
-            delete allMeta.message;
-            
-            // Flatten the metadata to avoid nested object conflicts
-            const flattenedMeta = flattenObject(allMeta);
-            
-            return {
-              '@timestamp': new Date(timestamp || new Date()).toISOString(),
-              message: message || '',
-              severity: level || 'info',
-              // Don't nest under 'fields' - put flattened fields at root
-              ...flattenedMeta
-            };
-          }
-        }));
-      } catch (error) {
-        console.warn('Failed to initialize Elasticsearch transport:', error.message);
-      }
-    }
+    // if (config.logging?.elasticsearch?.enabled && config.logging?.elasticsearch?.url) {
+    //   try {
+    //     transports.push(new ElasticsearchTransport({
+    //       level: config.logging?.level || 'info',
+    //       clientOpts: {
+    //         node: config.logging.elasticsearch.url,
+    //         auth: config.logging.elasticsearch.user ? {
+    //           username: config.logging.elasticsearch.user,
+    //           password: config.logging.elasticsearch.password
+    //         } : undefined,
+    //         tls: {
+    //           rejectUnauthorized: false
+    //         }
+    //       },
+    //       indexPrefix: config.logging?.elasticsearch?.indexPrefix || 'chat-server-logs',
+    //       dataStream: true,
+    //       transformer: (logData) => {
+    //         const { timestamp, level, message, ...meta } = logData;
+    //         
+    //         // Get context from the logger instance
+    //         const currentContext = this.getCurrentContext();
+    //         
+    //         // Merge all metadata
+    //         const allMeta = {
+    //           ...currentContext,
+    //           ...meta,
+    //           environment: process.env.NODE_ENV || 'development',
+    //           service: 'vortexhive-chat',
+    //           version: process.env.npm_package_version || '1.0.0'
+    //         };
+    //         
+    //         // Remove duplicate fields that would conflict
+    //         delete allMeta.timestamp;
+    //         delete allMeta.level;
+    //         delete allMeta.message;
+    //         
+    //         // Flatten the metadata to avoid nested object conflicts
+    //         const flattenedMeta = flattenObject(allMeta);
+    //         
+    //         return {
+    //           '@timestamp': new Date(timestamp || new Date()).toISOString(),
+    //           message: message || '',
+    //           severity: level || 'info',
+    //           // Don't nest under 'fields' - put flattened fields at root
+    //           ...flattenedMeta
+    //         };
+    //       }
+    //     }));
+    //   } catch (error) {
+    //     console.warn('Failed to initialize Elasticsearch transport:', error.message);
+    //   }
+    // }
 
     return winston.createLogger({
       level: config.logging?.level || 'info',
