@@ -60,6 +60,23 @@ class MessageService {
         updatedAt: new Date()
       };
 
+
+      // ✅ Clean, structured log
+      console.log('🧾 Prepared messageData for DB insert:', {
+        id: messageData.id,
+        clientTempId: messageData.clientTempId,
+        conversationId: messageData.conversationId,
+        jobId: messageData.jobId,
+        senderId: messageData.senderId,
+        receiverId: messageData.receiverId,
+        type: messageData.type,
+        content: messageData.content,
+        status: messageData.status,
+        deleted: messageData.deleted,
+        createdAt: messageData.createdAt,
+        updatedAt: messageData.updatedAt
+      });
+
       // Create message directly in database and queue for additional processing
       const message = await Message.create(messageData);
       await queueService.enqueueMessage(messageData);
