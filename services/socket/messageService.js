@@ -13,11 +13,11 @@ class MessageService {
   // Extract and validate payload
 
   console.log('📥 Incoming payload:', JSON.stringify(payload, null, 2));
-
+  console.log( " payload.clientTempId" +  payload.clientTempId);
   const {
     jobId = payload.jobId,
     messageId = uuidv4(),
-    console.log( " payload.clientTempId" +  payload.clientTempId);
+    
     clientTempId = payload.clientTempId || null, // ✅ Accept string temp ID from client
     receiverId,
     conversationId,
