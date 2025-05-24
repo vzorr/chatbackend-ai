@@ -14,7 +14,7 @@ class MessageService {
   const {
     jobId = payload.jobId,
     messageId = uuidv4(),
-    clientTempId,
+    clientTempId = messageId, // ✅ fallback to messageId if not sent separately
     receiverId,
     conversationId,
     messageType = 'text',
