@@ -11,6 +11,9 @@ class MessageService {
 
   async handleSendMessage(io, socket, payload) {
   // Extract and validate payload
+
+  console.log('📥 Incoming payload:', JSON.stringify(payload, null, 2));
+  
   const {
     jobId = payload.jobId,
     messageId = uuidv4(),
