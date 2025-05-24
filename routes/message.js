@@ -3,13 +3,7 @@ const express = require('express');
 const router = express.Router();
 const { Op, Sequelize } = require('sequelize');
 const { v4: uuidv4 } = require('uuid');
-const { 
-  Message, 
-  MessageVersion, 
-  Conversation, 
-  ConversationParticipant,
-  User 
-} = require('../db/models');
+
 const { authenticate } = require('../middleware/authentication');
 const redisService = require('../services/redis');
 const queueService = require('../services/queue/queueService');
@@ -58,6 +52,10 @@ router.get('/conversation/:conversationId',
     
     try {
       // Verify user is a participant
+           // Lazy load models
+      const db = require('../db/models');
+      const { Conversation, ConversationParticipant, Message, User } = db;
+
       const participation = await ConversationParticipant.findOne({
         where: { conversationId, userId }
       });
@@ -215,6 +213,11 @@ router.get('/:id',
     }
     
     try {
+    
+           // Lazy load models
+      const db = require('../db/models');
+      const { Conversation, ConversationParticipant, Message, User } = db;
+
       // Get message
       const message = await Message.findByPk(id);
       
@@ -226,6 +229,7 @@ router.get('/:id',
       if (message.senderId !== userId && message.receiverId !== userId) {
         // Check if user is conversation participant
         if (message.conversationId) {
+
           const participation = await ConversationParticipant.findOne({
             where: { conversationId: message.conversationId, userId }
           });
@@ -788,6 +792,11 @@ router.get('/:id/versions',
     }
     
     try {
+
+           // Lazy load models
+      const db = require('../db/models');
+      const { Conversation, ConversationParticipant, Message, User } = db;
+
       // Find message
       const message = await Message.findByPk(id);
       
@@ -909,6 +918,10 @@ router.post('/read',
       // Queue read receipt for processing
       await queueService.enqueueReadReceipt(userId, messageIds || [], conversationId);
       
+           // Lazy load models
+      const db = require('../db/models');
+      const { Conversation, ConversationParticipant, Message, User } = db;
+
       let updatedCount = 0;
       
       // Process immediately for UI feedback
@@ -1026,6 +1039,11 @@ router.get('/offline',
 router.get('/search', 
   authenticate, 
   asyncHandler(async (req, res) => {
+
+         // Lazy load models
+      const db = require('../db/models');
+      const { Conversation, ConversationParticipant, Message, User } = db;
+      
     const { query, conversationId, limit = 20, offset = 0 } = req.query;
     const userId = req.user.id;
     
@@ -1046,6 +1064,7 @@ router.get('/search',
     }
     
     try {
+      
       // Build search conditions
       const searchConditions = {
         [Op.and]: [
