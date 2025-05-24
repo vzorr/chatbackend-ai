@@ -5,7 +5,6 @@ const { ElasticsearchTransport } = require('winston-elasticsearch');
 const path = require('path');
 const config = require('../config/config');
 
-
 function flattenObject(obj, prefix = '', res = {}) {
   for (const key in obj) {
     if (!Object.hasOwn(obj, key)) continue;
@@ -107,14 +106,20 @@ class EnterpriseLogger {
           },
           indexPrefix: config.logging?.elasticsearch?.indexPrefix || 'chat-server-logs',
           dataStream: true,
-          // ✅ Updated transformer using flatten
+          // ✅ Updated transformer to avoid meta.* nesting
           transformer: (logData) => {
-            const flattened = flattenObject(logData); // ✅ Uses your custom flatten function
+            const { timestamp, level, message, ...rest } = logData;
+            const flattened = flattenObject(rest);
             return {
-              '@timestamp': new Date(logData.timestamp).toISOString(),
-              message: logData.message,
-              severity: logData.level,
-              fields: flattened
+              '@timestamp': new Date(timestamp || new Date()).toISOString(),
+              message,
+              severity: level,
+              fields: {
+                message,
+                level,
+                timestamp: new Date(timestamp || new Date()).toISOString(),
+                ...flattened
+              }
             };
           }
         }));
@@ -153,7 +158,7 @@ class EnterpriseLogger {
   formatMessage(message) {
     if (message === undefined) return 'undefined';
     if (message === null) return 'null';
-    
+
     if (typeof message === 'object') {
       try {
         if (message instanceof Error) {
@@ -164,7 +169,7 @@ class EnterpriseLogger {
         return '[Object could not be stringified]';
       }
     }
-    
+
     return message;
   }
 
@@ -194,69 +199,67 @@ class EnterpriseLogger {
   // Get context key - could be request ID, process ID, or async context
   getContextKey() {
     try {
-      // If we have AsyncLocalStorage available (Node.js 12.17.0+), use it
       if (global.asyncLocalStorage && global.asyncLocalStorage.getStore) {
         const store = global.asyncLocalStorage.getStore();
         if (store && store.contextId) return store.contextId;
       }
     } catch (error) {
-      // Fallback to process ID if AsyncLocalStorage is not available or errors
+      // Fallback
     }
     return process.pid.toString();
   }
 
-  // Logging methods with improved object handling
-  info(message, meta = {}) { 
-    this.logger.info(this.formatMessage(message), this.sanitizeMeta(meta)); 
+  info(message, meta = {}) {
+    this.logger.info(this.formatMessage(message), this.sanitizeMeta(meta));
   }
-  
-  error(message, meta = {}) { 
-    this.logger.error(this.formatMessage(message), this.sanitizeMeta(this.processError(meta))); 
+
+  error(message, meta = {}) {
+    this.logger.error(this.formatMessage(message), this.sanitizeMeta(this.processError(meta)));
   }
-  
-  warn(message, meta = {}) { 
-    this.logger.warn(this.formatMessage(message), this.sanitizeMeta(meta)); 
+
+  warn(message, meta = {}) {
+    this.logger.warn(this.formatMessage(message), this.sanitizeMeta(meta));
   }
-  
-  debug(message, meta = {}) { 
-    this.logger.debug(this.formatMessage(message), this.sanitizeMeta(meta)); 
+
+  debug(message, meta = {}) {
+    this.logger.debug(this.formatMessage(message), this.sanitizeMeta(meta));
   }
 
   audit(action, meta = {}) {
-    this.logger.info('AUDIT', { 
-      ...this.sanitizeMeta(meta), 
-      action, 
+    this.logger.info('AUDIT', {
+      ...this.sanitizeMeta(meta),
+      action,
       timestamp: new Date().toISOString(),
       audit: true
     });
-    return this; // For method chaining
+    return this;
   }
 
   performance(operation, duration, meta = {}) {
-    this.logger.info('PERFORMANCE', { 
-      ...this.sanitizeMeta(meta), 
-      operation, 
-      duration: typeof duration === 'number' ? `${duration}ms` : duration, 
+    this.logger.info('PERFORMANCE', {
+      ...this.sanitizeMeta(meta),
+      operation,
+      duration: typeof duration === 'number' ? `${duration}ms` : duration,
       timestamp: new Date().toISOString(),
       performanceMetric: true
     });
-    return this; // For method chaining
+    return this;
   }
 
   security(event, meta = {}) {
-    this.logger.warn('SECURITY', { 
-      ...this.sanitizeMeta(meta), 
-      event, 
-      timestamp: new Date().toISOString(), 
+    this.logger.warn('SECURITY', {
+      ...this.sanitizeMeta(meta),
+      event,
+      timestamp: new Date().toISOString(),
       severity: meta.severity || 'medium',
       securityEvent: true
     });
-    return this; // For method chaining
+    return this;
   }
 
   processError(meta) {
     if (!meta) return {};
-    
+
     if (meta instanceof Error) {
       return {
         error: {
@@ -267,7 +270,7 @@ class EnterpriseLogger {
         }
       };
     }
-    
+
     if (meta.error instanceof Error) {
       return {
         ...meta,
@@ -279,8 +282,7 @@ class EnterpriseLogger {
         }
       };
     }
-    
-    // Handle error as string
+
     if (meta.error && typeof meta.error === 'string') {
       return {
         ...meta,
@@ -289,52 +291,44 @@ class EnterpriseLogger {
         }
       };
     }
-    
+
     return meta;
   }
 
   sanitizeMeta(meta) {
     if (!meta || typeof meta !== 'object') return meta;
-    
-    // Create a deep copy to avoid modifying the original
+
     let sanitized;
     try {
       sanitized = JSON.parse(JSON.stringify(meta));
     } catch (error) {
-      // If circular structure or other JSON error, create shallow copy
       sanitized = { ...meta };
     }
 
     const sensitiveFields = [
-      'password', 'token', 'secret', 'key', 'authorization', 'credit_card', 
+      'password', 'token', 'secret', 'key', 'authorization', 'credit_card',
       'ssn', 'pin', 'apiKey', 'api_key', 'auth', 'authentication', 'credential',
       'accessToken', 'refreshToken', 'access_token', 'refresh_token', 'jwt'
     ];
-    
-    // Recursive function to sanitize objects
+
     const sanitizeObject = (obj) => {
       if (!obj || typeof obj !== 'object') return;
-      
       Object.keys(obj).forEach(key => {
-        // Check if this key contains a sensitive field name
-        const isPasswordField = sensitiveFields.some(field => 
+        const isSensitive = sensitiveFields.some(field =>
           key.toLowerCase().includes(field.toLowerCase())
         );
-        
         if (typeof obj[key] === 'object' && obj[key] !== null) {
-          sanitizeObject(obj[key]); // Recurse into nested objects
-        } else if (isPasswordField && typeof obj[key] === 'string') {
-          // Redact sensitive data
+          sanitizeObject(obj[key]);
+        } else if (isSensitive && typeof obj[key] === 'string') {
           obj[key] = '[REDACTED]';
         }
       });
     };
-    
+
     sanitizeObject(sanitized);
     return sanitized;
   }
 
-  // Create a child logger with default metadata
   child(defaultMeta) {
     const childLogger = Object.create(this);
     childLogger.logger = this.logger.child(defaultMeta);
@@ -342,10 +336,9 @@ class EnterpriseLogger {
     return childLogger;
   }
 
-  // Timer utility for performance logging
   startTimer() {
     const start = Date.now();
-    return { 
+    return {
       done: (operation, meta = {}) => {
         const duration = Date.now() - start;
         this.performance(operation, duration, meta);
@@ -355,6 +348,5 @@ class EnterpriseLogger {
   }
 }
 
-// Create and export a singleton instance
 const logger = new EnterpriseLogger();
 module.exports = logger;
