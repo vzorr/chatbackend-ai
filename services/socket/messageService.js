@@ -1,6 +1,6 @@
 // /services/socket/messageService.js
 const { v4: uuidv4 } = require('uuid');
-const { Op } = require('sequelize');
+const { Op, UUID } = require('sequelize');
 const db = require('../../db');
 const queueService = require('../queue/queueService');
 const redisService = require('../redis');
@@ -54,7 +54,7 @@ class MessageService {
           attachments
         },
         status: 'sent',
-        clientTempId,
+        UUID, //client temp id :TODO fix
         deleted: false,
         createdAt: new Date(),
         updatedAt: new Date()
