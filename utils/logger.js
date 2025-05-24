@@ -4,7 +4,22 @@ const DailyRotateFile = require('winston-daily-rotate-file');
 const { ElasticsearchTransport } = require('winston-elasticsearch');
 const path = require('path');
 const config = require('../config/config');
-const flatten = require('flat'); // ✅ Added for flattening
+
+
+function flattenObject(obj, prefix = '', res = {}) {
+  for (const key in obj) {
+    if (!Object.hasOwn(obj, key)) continue;
+    const value = obj[key];
+    const prefixedKey = prefix ? `${prefix}.${key}` : key;
+
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      flattenObject(value, prefixedKey, res);
+    } else {
+      res[prefixedKey] = value;
+    }
+  }
+  return res;
+}
 
 class EnterpriseLogger {
   constructor() {
@@ -94,7 +109,7 @@ class EnterpriseLogger {
           dataStream: true,
           // ✅ Updated transformer using flatten
           transformer: (logData) => {
-            const flattened = flatten(logData, { safe: true });
+            const flattened = flattenObject(logData); // ✅ Uses your custom flatten function
             return {
               '@timestamp': new Date(logData.timestamp).toISOString(),
               message: logData.message,
