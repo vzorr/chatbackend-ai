@@ -17,7 +17,8 @@ class MessageService {
   const {
     jobId = payload.jobId,
     messageId = uuidv4(),
-    clientTempId = payload.clientTempId || payload.id || null, // ✅ Accept string temp ID from client
+    console.log( " payload.clientTempId" +  payload.clientTempId);
+    clientTempId = payload.clientTempId || null, // ✅ Accept string temp ID from client
     receiverId,
     conversationId,
     messageType = 'text',
