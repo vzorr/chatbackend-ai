@@ -29,25 +29,10 @@ class EnterpriseLogger {
 
   createLogger() {
     const format = winston.format.combine(
-      winston.format.timestamp({ format: () => new Date().toISOString() }), // This already returns ISO format with T and Z
+      winston.format.timestamp({ format: () => new Date().toISOString() }),
       winston.format.errors({ stack: true }),
       winston.format.splat(),
-      winston.format.json(),
-      winston.format.printf(info => {
-        const { timestamp, level, message, ...meta } = info;
-        // Get context for current request/process
-        const currentContext = this.getCurrentContext();
-        return JSON.stringify({
-          timestamp,
-          level,
-          message,
-          ...currentContext,
-          ...meta,
-          environment: process.env.NODE_ENV || 'development',
-          service: 'vortexhive-chat',
-          version: process.env.npm_package_version || '1.0.0'
-        });
-      })
+      winston.format.json()
     );
 
     const transports = [];
@@ -70,14 +55,35 @@ class EnterpriseLogger {
       console.warn('Could not create logs directory:', err.message);
     }
 
-    // Daily rotate file transports
+    // Daily rotate file transports with custom format
+    const fileFormat = winston.format.combine(
+      winston.format.timestamp({ format: () => new Date().toISOString() }),
+      winston.format.errors({ stack: true }),
+      winston.format.json(),
+      winston.format.printf(info => {
+        const { timestamp, level, message, ...meta } = info;
+        const currentContext = this.getCurrentContext();
+        return JSON.stringify({
+          timestamp,
+          level,
+          message,
+          ...currentContext,
+          ...meta,
+          environment: process.env.NODE_ENV || 'development',
+          service: 'vortexhive-chat',
+          version: process.env.npm_package_version || '1.0.0'
+        });
+      })
+    );
+
     transports.push(new DailyRotateFile({
       filename: 'logs/application-%DATE%.log',
       datePattern: 'YYYY-MM-DD',
       zippedArchive: true,
       maxSize: '20m',
       maxFiles: `${config.logging?.retention?.days || 30}d`,
-      level: config.logging?.level || 'info'
+      level: config.logging?.level || 'info',
+      format: fileFormat
     }));
 
     transports.push(new DailyRotateFile({
@@ -86,7 +92,8 @@ class EnterpriseLogger {
       zippedArchive: true,
       maxSize: '20m',
       maxFiles: `${config.logging?.retention?.days || 30}d`,
-      level: 'error'
+      level: 'error',
+      format: fileFormat
     }));
 
     // Optional Elasticsearch transport
@@ -106,22 +113,37 @@ class EnterpriseLogger {
           },
           indexPrefix: config.logging?.elasticsearch?.indexPrefix || 'chat-server-logs',
           dataStream: true,
-          // ✅ Updated transformer to avoid meta.* nesting
-     transformer: (logData) => {
-  const { timestamp, level, message, ...rest } = logData;
-
-  // Flatten everything including 'meta' and nested fields
-  const flattened = flattenObject({ ...rest, timestamp, level, message });
-
-  return {
-    '@timestamp': new Date(timestamp || new Date()).toISOString(),
-    message,
-    severity: level,
-    fields: {
-      ...flattened
-    }
-  };
-}
+          transformer: (logData) => {
+            const { timestamp, level, message, ...meta } = logData;
+            
+            // Get context from the logger instance
+            const currentContext = this.getCurrentContext();
+            
+            // Merge all metadata
+            const allMeta = {
+              ...currentContext,
+              ...meta,
+              environment: process.env.NODE_ENV || 'development',
+              service: 'vortexhive-chat',
+              version: process.env.npm_package_version || '1.0.0'
+            };
+            
+            // Remove duplicate fields that would conflict
+            delete allMeta.timestamp;
+            delete allMeta.level;
+            delete allMeta.message;
+            
+            // Flatten the metadata to avoid nested object conflicts
+            const flattenedMeta = flattenObject(allMeta);
+            
+            return {
+              '@timestamp': new Date(timestamp || new Date()).toISOString(),
+              message: message || '',
+              severity: level || 'info',
+              // Don't nest under 'fields' - put flattened fields at root
+              ...flattenedMeta
+            };
+          }
         }));
       } catch (error) {
         console.warn('Failed to initialize Elasticsearch transport:', error.message);
@@ -170,7 +192,7 @@ class EnterpriseLogger {
       }
     }
 
-    return message;
+    return String(message);
   }
 
   // Context management
@@ -181,13 +203,13 @@ class EnterpriseLogger {
       ...existingContext,
       ...context
     });
-    return this; // For method chaining
+    return this;
   }
 
   clearContext() {
     const contextKey = this.getContextKey();
     this.contextMap.delete(contextKey);
-    return this; // For method chaining
+    return this;
   }
 
   // Get the current context
@@ -229,7 +251,6 @@ class EnterpriseLogger {
     this.logger.info('AUDIT', {
       ...this.sanitizeMeta(meta),
       action,
-      timestamp: new Date().toISOString(),
       audit: true
     });
     return this;
@@ -239,8 +260,7 @@ class EnterpriseLogger {
     this.logger.info('PERFORMANCE', {
       ...this.sanitizeMeta(meta),
       operation,
-      duration: typeof duration === 'number' ? `${duration}ms` : duration,
-      timestamp: new Date().toISOString(),
+      duration: typeof duration === 'number' ? `${duration}ms` : String(duration),
       performanceMetric: true
     });
     return this;
@@ -249,10 +269,9 @@ class EnterpriseLogger {
   security(event, meta = {}) {
     this.logger.warn('SECURITY', {
       ...this.sanitizeMeta(meta),
-      event,
-      timestamp: new Date().toISOString(),
+      securityEvent: event,
       severity: meta.severity || 'medium',
-      securityEvent: true
+      securityAlert: true
     });
     return this;
   }
@@ -262,33 +281,27 @@ class EnterpriseLogger {
 
     if (meta instanceof Error) {
       return {
-        error: {
-          message: meta.message,
-          stack: meta.stack,
-          code: meta.code,
-          name: meta.name
-        }
+        errorMessage: meta.message,
+        errorStack: meta.stack,
+        errorCode: meta.code,
+        errorName: meta.name
       };
     }
 
     if (meta.error instanceof Error) {
       return {
         ...meta,
-        error: {
-          message: meta.error.message,
-          stack: meta.error.stack,
-          code: meta.error.code,
-          name: meta.error.name
-        }
+        errorMessage: meta.error.message,
+        errorStack: meta.error.stack,
+        errorCode: meta.error.code,
+        errorName: meta.error.name
       };
     }
 
     if (meta.error && typeof meta.error === 'string') {
       return {
         ...meta,
-        error: {
-          message: meta.error
-        }
+        errorMessage: meta.error
       };
     }
 
