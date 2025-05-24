@@ -11,7 +11,7 @@ class MessageService {
     // Extract and validate payload
     const {
       jobId = payload.jobId,
-      messageId = uuidv4(), clientTempId, jobId,
+      messageId = uuidv4(), clientTempId,
       receiverId, conversationId, messageType = 'text',
       textMsg, text, messageImages = [], images = [],
       audioFile = '', audio = '', replyToMessageId = null, attachments = []
