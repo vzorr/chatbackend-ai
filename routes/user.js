@@ -2,7 +2,8 @@
 const express = require('express');
 const router = express.Router();
 const { Op } = require('sequelize');
-const { User, ConversationParticipant, Conversation } = require('../db/models');
+
+
 const { authenticate } = require('../middleware/authentication');
 const redisService = require('../services/redis');
 const logger = require('../utils/logger');
@@ -46,7 +47,13 @@ router.post('/register',
     }
 
     try {
-      // Check if user already exists
+  
+      // Verify user is a participant
+           // Lazy load models
+      const db = require('../db/models');
+      const { Conversation, ConversationParticipant, Message, User } = db;
+
+
       const existingUser = await User.findOne({ where: { email } });
       if (existingUser) {
         logger.warn(`Registration attempt with existing email: ${email}`);
@@ -123,6 +130,7 @@ router.post('/sync',
     }
 
     try {
+   
       // Verify and decode token
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       
@@ -142,6 +150,10 @@ router.post('/sync',
       if (!validRoles.includes(normalizedRole)) {
         throw createOperationalError(`Invalid role. Must be one of: ${validRoles.join(', ')}`, 400, 'INVALID_ROLE');
       }
+
+      
+    
+      const { User, ConversationParticipant, Conversation } = require('../db/models');
 
       // Find or create user
       let user = await User.findOne({ where: { externalId } });
@@ -250,6 +262,12 @@ router.get('/',
     }
     
     try {
+
+
+      // Verify user is a participant
+           // Lazy load models
+      const db = require('../db/models');
+      const { Conversation, ConversationParticipant, Message, User } = db;
       // Build query conditions
       const where = {
         id: { [Op.ne]: userId } // Exclude current user
@@ -333,6 +351,12 @@ router.get('/:id',
     }
     
     try {
+      
+      // Verify user is a participant
+           // Lazy load models
+      const db = require('../db/models');
+      const { Conversation, ConversationParticipant, Message, User } = db;
+
       const user = await User.findByPk(id, {
         attributes: ['id', 'name', 'phone', 'email', 'avatar', 'role', 'isOnline', 'lastSeen', 'createdAt']
       });
@@ -381,6 +405,12 @@ router.get('/by-conversation/:conversationId',
     }
     
     try {
+      
+      // Verify user is a participant
+           // Lazy load models
+      const db = require('../db/models');
+      const { Conversation, ConversationParticipant, Message, User } = db;
+
       // Verify user is a participant
       const participation = await ConversationParticipant.findOne({
         where: { conversationId, userId }
@@ -462,6 +492,8 @@ router.post('/status',
     }
     
     try {
+
+      
       // Get presence info from Redis
       const presenceMap = await redisService.getUsersPresence(userIds);
       
@@ -522,6 +554,11 @@ router.put('/profile',
     }
 
     try {
+      // Verify user is a participant
+           // Lazy load models
+      const db = require('../db/models');
+      const { Conversation, ConversationParticipant, Message, User } = db;
+
       // Check if phone is already taken by another user
       if (phone !== undefined && phone.trim().length > 0) {
         const existingUser = await User.findOne({
@@ -613,6 +650,12 @@ router.post('/change-password',
     }
 
     try {
+
+      // Verify user is a participant
+           // Lazy load models
+      const db = require('../db/models');
+      const { Conversation, ConversationParticipant, Message, User } = db;
+      
       // Get user with password
       const user = await User.findByPk(userId, {
         attributes: ['id', 'password']
@@ -717,6 +760,13 @@ router.get('/search',
     }
 
     try {
+
+      // Verify user is a participant
+           // Lazy load models
+      const db = require('../db/models');
+      const { Conversation, ConversationParticipant, Message, User } = db;
+
+
       // Build query conditions
       const where = {
         id: { [Op.ne]: userId } // Exclude current user
@@ -802,6 +852,12 @@ router.get('/me',
     const userId = req.user.id;
 
     try {
+
+      // Verify user is a participant
+           // Lazy load models
+      const db = require('../db/models');
+      const { Conversation, ConversationParticipant, Message, User } = db;
+
       const user = await User.findByPk(userId, {
         attributes: [
           'id', 'externalId', 'name', 'phone', 'email', 
@@ -863,6 +919,11 @@ router.post('/bulk-status',
     }
 
     try {
+
+      // Verify user is a participant
+           // Lazy load models
+      const db = require('../db/models');
+      const { Conversation, ConversationParticipant, Message, User } = db;
       // Get presence info from Redis
       const presenceMap = await redisService.getUsersPresence(userIds);
 
