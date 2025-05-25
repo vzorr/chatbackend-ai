@@ -1008,4 +1008,295 @@ router.get('/whoami',
   })
 );
 
+
+/**
+ * @route POST /api/v1/auth/register-user
+ * @desc Register a new user in the chat server
+ * @access Private (JWT)
+ */
+router.post('/register-user',
+  (req, res, next) => {
+    logger.info('Route hit: /api/v1/auth/register-user', {
+      method: req.method,
+      path: req.path,
+      baseUrl: req.baseUrl,
+      originalUrl: req.originalUrl,
+      headers: Object.keys(req.headers)
+    });
+    next();
+  },
+  authMiddleware.authenticate.bind(authMiddleware),
+  asyncHandler(async (req, res) => {
+    logger.info('JWT authentication passed for /register-user route', {
+      authenticatedUserId: req.user?.id,
+      authenticatedUserRole: req.user?.role
+    });
+    
+    const {
+      id,
+      externalId,
+      name,
+      phone,
+      email,
+      role,
+      avatar
+    } = req.body;
+    
+    // Validate required fields
+    if (!externalId || !phone || !role) {
+      throw createOperationalError(
+        'Missing required fields: externalId, phone, and role are required',
+        400,
+        'MISSING_REQUIRED_FIELDS'
+      );
+    }
+    
+    // Validate UUID formats
+    if (!validateUUID(externalId)) {
+      throw createOperationalError(
+        'Invalid externalId format. Must be a valid UUID',
+        400,
+        'INVALID_EXTERNAL_ID_FORMAT'
+      );
+    }
+    
+    // If id is provided, validate it's a valid UUID
+    if (id && !validateUUID(id)) {
+      throw createOperationalError(
+        'Invalid id format. Must be a valid UUID',
+        400,
+        'INVALID_ID_FORMAT'
+      );
+    }
+    
+    // Validate phone format (basic validation - at least 10 characters)
+    if (!phone || phone.length < 10) {
+      throw createOperationalError(
+        'Invalid phone number. Must be at least 10 characters',
+        400,
+        'INVALID_PHONE_FORMAT'
+      );
+    }
+    
+    // Validate email format if provided
+    if (email) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        throw createOperationalError(
+          'Invalid email format',
+          400,
+          'INVALID_EMAIL_FORMAT'
+        );
+      }
+    }
+    
+    // Validate and normalize role
+    const validRoles = ['customer', 'usta', 'administrator'];
+    const normalizedRole = role ? role.toLowerCase() : null;
+    
+    if (!normalizedRole || !validRoles.includes(normalizedRole)) {
+      throw createOperationalError(
+        `Invalid role. Must be one of: ${validRoles.join(', ')}`,
+        400,
+        'INVALID_ROLE'
+      );
+    }
+    
+    // Validate avatar URL if provided
+    if (avatar && typeof avatar === 'string' && avatar.trim().length > 0) {
+      try {
+        new URL(avatar); // This will throw if invalid URL
+      } catch (error) {
+        throw createOperationalError(
+          'Invalid avatar URL format',
+          400,
+          'INVALID_AVATAR_URL'
+        );
+      }
+    }
+    
+    try {
+      // Wait for database initialization if needed
+      if (typeof db.waitForInitialization === 'function') {
+        await db.waitForInitialization();
+      }
+      
+      // Get models
+      const models = typeof db.getModels === 'function' ? db.getModels() : db;
+      const User = models.User;
+      
+      if (!User) {
+        logger.error('User model not found in database models');
+        throw createSystemError('Server configuration error - User model not found');
+      }
+      
+      // Check for existing users with same externalId, phone, or email
+      const whereConditions = [
+        { externalId: externalId },
+        { phone: phone.trim() }
+      ];
+      
+      // Only check email if provided
+      if (email && email.trim()) {
+        whereConditions.push({ email: email.toLowerCase().trim() });
+      }
+      
+      logger.info('Checking for existing users', {
+        externalId,
+        phone: phone.trim(),
+        email: email ? email.toLowerCase().trim() : 'not provided'
+      });
+      
+      const existingUser = await User.findOne({
+        where: { [Op.or]: whereConditions }
+      });
+      
+      if (existingUser) {
+        // Determine which field caused the conflict
+        if (existingUser.externalId === externalId) {
+          logger.warn('Registration failed - duplicate externalId', {
+            externalId,
+            existingUserId: existingUser.id
+          });
+          throw createOperationalError(
+            'User with this external ID already exists',
+            409,
+            'DUPLICATE_EXTERNAL_ID'
+          );
+        }
+        
+        if (existingUser.phone === phone.trim()) {
+          logger.warn('Registration failed - duplicate phone', {
+            phone: phone.trim(),
+            existingUserId: existingUser.id
+          });
+          throw createOperationalError(
+            'User with this phone number already exists',
+            409,
+            'DUPLICATE_PHONE'
+          );
+        }
+        
+        if (email && existingUser.email === email.toLowerCase().trim()) {
+          logger.warn('Registration failed - duplicate email', {
+            email: email.toLowerCase().trim(),
+            existingUserId: existingUser.id
+          });
+          throw createOperationalError(
+            'User with this email already exists',
+            409,
+            'DUPLICATE_EMAIL'
+          );
+        }
+      }
+      
+      // Determine user ID - use provided or generate new
+      const userId = id && validateUUID(id) ? id : uuidv4();
+      const isGeneratedId = !id || !validateUUID(id);
+      
+      logger.info('Creating new user', {
+        userId,
+        externalId,
+        role: normalizedRole,
+        isGeneratedId,
+        registeredBy: req.user.id
+      });
+      
+      // Create the user
+      const newUser = await User.create({
+        id: userId,
+        externalId: externalId,
+        name: name ? name.trim() : null,
+        phone: phone.trim(),
+        email: email ? email.toLowerCase().trim() : null,
+        role: normalizedRole,
+        avatar: avatar ? avatar.trim() : null,
+        isOnline: false,
+        lastSeen: null,
+        socketId: null,
+        metaData: {
+          source: 'api_registration',
+          registeredAt: new Date().toISOString(),
+          registeredBy: req.user.id,
+          registeredByRole: req.user.role,
+          registeredByName: req.user.name
+        }
+      });
+      
+      logger.info('User registered successfully', {
+        userId: newUser.id,
+        externalId: newUser.externalId,
+        role: newUser.role,
+        isGeneratedId,
+        registeredBy: req.user.id
+      });
+      
+      // Audit log
+      logger.audit('user_registration', {
+        userId: newUser.id,
+        externalId: newUser.externalId,
+        role: newUser.role,
+        source: 'api',
+        registeredBy: req.user.id,
+        registeredByRole: req.user.role,
+        ip: req.ip
+      });
+      
+      // Return success response
+      res.status(201).json({
+        success: true,
+        user: {
+          id: newUser.id,
+          externalId: newUser.externalId,
+          name: newUser.name,
+          phone: newUser.phone,
+          email: newUser.email,
+          role: newUser.role,
+          avatar: newUser.avatar
+        },
+        message: 'User registered successfully'
+      });
+      
+    } catch (error) {
+      logger.error('Error in user registration', {
+        error: error.message,
+        stack: error.stack,
+        externalId,
+        phone,
+        email,
+        role,
+        registeredBy: req.user?.id
+      });
+      
+      // Handle specific database errors
+      if (error.name === 'SequelizeUniqueConstraintError') {
+        const field = error.errors?.[0]?.path || 'field';
+        throw createOperationalError(
+          `A user with this ${field} already exists`,
+          409,
+          'DUPLICATE_FIELD'
+        );
+      }
+      
+      if (error.name === 'SequelizeValidationError') {
+        const details = error.errors.map(e => e.message).join(', ');
+        throw createOperationalError(
+          `Validation failed: ${details}`,
+          400,
+          'VALIDATION_ERROR'
+        );
+      }
+      
+      // If it's already an operational error, throw it as is
+      if (error.isOperational) {
+        throw error;
+      }
+      
+      // Otherwise, wrap it as a system error
+      throw createSystemError('Failed to register user', error);
+    }
+  })
+);
+
+
 module.exports = router;
