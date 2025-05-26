@@ -57,64 +57,127 @@ class UserSyncService {
 
       logger.info('Received mainAppData', { mainAppData });
 
-      let user = await User.findOne({ where: { externalId: mainAppData.appUserId } });
+      // Try to find existing user by both id and externalId
+      let user = await User.findOne({ 
+        where: { 
+          [db.Sequelize.Op.or]: [
+            { id: mainAppData.appUserId },
+            { externalId: mainAppData.appUserId }
+          ]
+        } 
+      });
 
       // Normalize and validate the role
       const normalizedRole = this.normalizeRole(mainAppData.role);
 
       const syncData = {
-        id: mainAppData.appUserId,
-        externalId: mainAppData.appUserId,
         name: mainAppData.name || mainAppData.fullName || 'User',
         email: mainAppData.email,
-        phone: mainAppData.phone || mainAppData.phoneNumber || mainAppData.mobile || '+00000000000', // Default phone if not provided
+        phone: mainAppData.phone || mainAppData.phoneNumber || mainAppData.mobile || '+00000000000',
         avatar: mainAppData.avatar || mainAppData.profileImage,
-        role: normalizedRole, // Use the normalized role
+        role: normalizedRole,
         metaData: {
           lastSyncAt: new Date(),
           syncSource: 'main_app',
           authToken: authToken ? authToken.substring(0, 10) + '...' : null,
           mainAppData: {
             userId: mainAppData.id,
-            originalRole: mainAppData.role, // Store original role for auditing
+            originalRole: mainAppData.role,
             createdAt: mainAppData.createdAt,
             updatedAt: mainAppData.updatedAt
           }
         }
       };
 
+      let action = 'NONE';
+      let wasCreated = false;
+      let wasUpdated = false;
+      let changes = {};
+
       if (user) {
-        await user.update(syncData);
-        logger.info('Updated existing user from main app', {
-          operationId,
-          userId: user.id,
-          externalId: user.externalId,
-          role: normalizedRole, // Log the normalized role
-          originalRole: mainAppData.role, // Log the original role for debugging
-          changes: this.getChangedFields(user, syncData)
-        });
+        // Check if any fields have actually changed
+        changes = this.getChangedFields(user, syncData);
+        
+        if (Object.keys(changes).length > 0) {
+          // Only update if there are actual changes
+          await user.update(syncData);
+          wasUpdated = true;
+          action = 'UPDATE';
+          
+          logger.info('Updated existing user from main app', {
+            operationId,
+            userId: user.id,
+            externalId: user.externalId,
+            role: normalizedRole,
+            originalRole: mainAppData.role,
+            changes: changes
+          });
+        } else {
+          // No changes detected
+          action = 'NO_CHANGE';
+          logger.info('User already exists with same data, no update needed', {
+            operationId,
+            userId: user.id,
+            externalId: user.externalId
+          });
+        }
       } else {
-        user = await User.create({
-          //id: uuidv4(),
-          ...syncData,
-          isOnline: false,
-          lastSeen: null
-        });
-        logger.info('Created new user from main app', {
-          operationId,
-          userId: user.id,
-          externalId: user.externalId,
-          role: normalizedRole, // Log the normalized role
-          originalRole: mainAppData.role // Log the original role for debugging
-        });
+        // Create new user
+        try {
+          user = await User.create({
+            id: mainAppData.appUserId,
+            externalId: mainAppData.appUserId,
+            ...syncData,
+            isOnline: false,
+            lastSeen: null
+          });
+          wasCreated = true;
+          action = 'CREATE';
+          
+          logger.info('Created new user from main app', {
+            operationId,
+            userId: user.id,
+            externalId: user.externalId,
+            role: normalizedRole,
+            originalRole: mainAppData.role
+          });
+        } catch (createError) {
+          // Handle duplicate key error specifically
+          if (createError.name === 'SequelizeUniqueConstraintError') {
+            // User was created by another request in the meantime
+            user = await User.findOne({ 
+              where: { 
+                [db.Sequelize.Op.or]: [
+                  { id: mainAppData.appUserId },
+                  { externalId: mainAppData.appUserId }
+                ]
+              } 
+            });
+            
+            if (user) {
+              action = 'ALREADY_EXISTS';
+              logger.info('User already exists (race condition), returning existing user', {
+                operationId,
+                userId: user.id,
+                externalId: user.externalId
+              });
+            } else {
+              throw createError; // Something else went wrong
+            }
+          } else {
+            throw createError;
+          }
+        }
       }
 
+      // Log the sync operation
       await this.logSyncOperation({
         operationId,
         userId: user.id,
         externalId: user.externalId,
-        action: user ? 'UPDATE' : 'CREATE',
-        syncData,
+        action: action,
+        syncData: wasCreated || wasUpdated ? syncData : null,
+        changes: wasUpdated ? changes : null,
         authToken
       });
 
@@ -129,6 +192,10 @@ class UserSyncService {
           avatar: user.avatar,
           role: user.role
         },
+        action: action,
+        wasCreated: wasCreated,
+        wasUpdated: wasUpdated,
+        changes: wasUpdated ? changes : {},
         operationId
       };
 
@@ -136,9 +203,56 @@ class UserSyncService {
       logger.error('User sync failed', {
         operationId,
         error: error.message,
-        stack: error.stack,
+        errorName: error.name,
+        errorStack: error.stack,
         mainAppData
       });
+
+      // Special handling for unique constraint errors
+      if (error.name === 'SequelizeUniqueConstraintError') {
+        // Try to find and return the existing user
+        try {
+          const existingUser = await db.User.findOne({ 
+            where: { 
+              [db.Sequelize.Op.or]: [
+                { id: mainAppData.appUserId },
+                { externalId: mainAppData.appUserId }
+              ]
+            } 
+          });
+          
+          if (existingUser) {
+            logger.info('Returning existing user after unique constraint error', {
+              operationId,
+              userId: existingUser.id,
+              externalId: existingUser.externalId
+            });
+            
+            return {
+              success: true,
+              user: {
+                id: existingUser.id,
+                externalId: existingUser.externalId,
+                name: existingUser.name,
+                email: existingUser.email,
+                phone: existingUser.phone,
+                avatar: existingUser.avatar,
+                role: existingUser.role
+              },
+              action: 'ALREADY_EXISTS',
+              wasCreated: false,
+              wasUpdated: false,
+              changes: {},
+              operationId
+            };
+          }
+        } catch (findError) {
+          logger.error('Failed to find existing user after unique constraint error', {
+            operationId,
+            error: findError.message
+          });
+        }
+      }
 
       await this.logSyncOperation({
         operationId,
@@ -146,6 +260,7 @@ class UserSyncService {
         action: 'FAILED',
         error: {
           message: error.message,
+          name: error.name,
           code: error.code,
           stack: error.stack
         },
@@ -306,8 +421,12 @@ class UserSyncService {
     const fields = ['name', 'email', 'phone', 'avatar', 'role'];
 
     for (const field of fields) {
-      if (oldData[field] !== newData[field]) {
-        changes[field] = { old: oldData[field], new: newData[field] };
+      // Compare values, handling null/undefined
+      const oldValue = oldData[field] || null;
+      const newValue = newData[field] || null;
+      
+      if (oldValue !== newValue) {
+        changes[field] = { old: oldValue, new: newValue };
       }
     }
 
@@ -320,7 +439,8 @@ class UserSyncService {
         operationId: data.operationId,
         action: data.action,
         userId: data.userId,
-        externalId: data.externalId
+        externalId: data.externalId,
+        hasChanges: data.changes ? Object.keys(data.changes).length > 0 : false
       });
     } catch (error) {
       logger.error('Failed to log sync operation', { error: error.message, data });
