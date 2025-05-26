@@ -122,7 +122,7 @@ class MessageService {
     console.log('🚀 About to emit message_sent with data:', {
     id: message.id,
     messageId: message.id,
-    clientTempId,
+    clientTempId:clientTempId,
     tempId: clientTempId,
     conversationId: targetConversationId,
     timestamp: Date.now()
@@ -132,7 +132,7 @@ class MessageService {
     socket.emit('message_sent', {
       id: message.id,
       messageId: message.id,
-      clientTempId,
+      clientTempId: clientTempId,
       tempId: clientTempId,
       conversationId: targetConversationId,
       timestamp: Date.now()

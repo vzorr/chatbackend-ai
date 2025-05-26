@@ -1,3 +1,4 @@
+// Updated conversation-participant.js model
 'use strict';
 
 module.exports = (sequelize, DataTypes) => {
@@ -23,12 +24,28 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.BOOLEAN,
       defaultValue: false
     },
+    isMuted: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false
+    },
+    isPinned: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false
+    },
+    notificationEnabled: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: true
+    },
     joinedAt: {
       type: DataTypes.DATE,
       allowNull: false,
       defaultValue: DataTypes.NOW
     },
     leftAt: {
+      type: DataTypes.DATE,
+      allowNull: true
+    },
+    lastReadAt: {
       type: DataTypes.DATE,
       allowNull: true
     }
@@ -39,6 +56,12 @@ module.exports = (sequelize, DataTypes) => {
       {
         unique: true,
         fields: ['conversationId', 'userId']
+      },
+      {
+        fields: ['userId', 'isPinned']
+      },
+      {
+        fields: ['userId', 'isMuted']
       }
     ]
   });
@@ -58,6 +81,14 @@ module.exports = (sequelize, DataTypes) => {
   // Instance methods
   ConversationParticipant.prototype.markAsRead = async function() {
     this.unreadCount = 0;
+    this.lastReadAt = new Date();
+    return this.save();
+  };
+  
+  ConversationParticipant.prototype.updateSettings = async function(settings) {
+    if (settings.hasOwnProperty('isMuted')) this.isMuted = settings.isMuted;
+    if (settings.hasOwnProperty('isPinned')) this.isPinned = settings.isPinned;
+    if (settings.hasOwnProperty('notificationEnabled')) this.notificationEnabled = settings.notificationEnabled;
     return this.save();
   };
 
@@ -79,6 +110,20 @@ module.exports = (sequelize, DataTypes) => {
     });
     
     return result;
+  };
+  
+  ConversationParticipant.getPinnedConversations = async function(userId) {
+    return ConversationParticipant.findAll({
+      where: {
+        userId,
+        isPinned: true
+      },
+      include: [{
+        model: sequelize.models.Conversation,
+        as: 'conversation'
+      }],
+      order: [['updatedAt', 'DESC']]
+    });
   };
 
   return ConversationParticipant;
