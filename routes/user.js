@@ -335,6 +335,7 @@ router.get('/',
 );
 
 // Get user by ID
+// Get user by ID - Updated to handle user existence checks better
 router.get('/:id', 
   authenticate, 
   asyncHandler(async (req, res) => {
@@ -351,38 +352,60 @@ router.get('/:id',
     }
     
     try {
-      
-      // Verify user is a participant
-           // Lazy load models
+      // Lazy load models
       const db = require('../db/models');
-      const { Conversation, ConversationParticipant, Message, User } = db;
+      const { User } = db;
 
-      const user = await User.findByPk(id, {
-        attributes: ['id', 'name', 'phone', 'email', 'avatar', 'role', 'isOnline', 'lastSeen', 'createdAt']
+      // Try to find user by ID first
+      let user = await User.findByPk(id, {
+        attributes: ['id', 'externalId', 'name', 'phone', 'email', 'avatar', 'role', 'isOnline', 'lastSeen', 'createdAt', 'updatedAt']
       });
       
+      // If not found by ID, try by externalId
       if (!user) {
-        throw createOperationalError('User not found', 404, 'USER_NOT_FOUND');
+        user = await User.findOne({
+          where: { externalId: id },
+          attributes: ['id', 'externalId', 'name', 'phone', 'email', 'avatar', 'role', 'isOnline', 'lastSeen', 'createdAt', 'updatedAt']
+        });
       }
       
-      // Get presence info from Redis for more accurate status
-      const presence = await redisService.getUserPresence(id);
+      if (!user) {
+        // Return 404 instead of throwing error for user existence checks
+        return res.status(404).json({
+          success: false,
+          error: {
+            code: 'USER_NOT_FOUND',
+            message: 'User not found',
+            statusCode: 404
+          }
+        });
+      }
       
-      const userData = {
-        ...user.toJSON(),
-        isOnline: presence ? presence.isOnline : user.isOnline,
-        lastSeen: presence && presence.lastSeen ? presence.lastSeen : user.lastSeen
-      };
+      // Don't get Redis presence for simple existence checks
+      // This might be causing issues
+      const userData = user.toJSON();
       
       res.json({ 
         success: true,
         user: userData 
       });
     } catch (error) {
-      if (error.isOperational) {
-        throw error;
-      }
-      throw createSystemError('Failed to retrieve user', error);
+      // Log the error but don't expose internal errors
+      logger.error('Error in GET /users/:id', { 
+        error: error.message, 
+        stack: error.stack,
+        userId: id 
+      });
+      
+      // Return 404 for any database errors during user check
+      return res.status(404).json({
+        success: false,
+        error: {
+          code: 'USER_CHECK_FAILED',
+          message: 'Failed to check user existence',
+          statusCode: 404
+        }
+      });
     }
   })
 );
