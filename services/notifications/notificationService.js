@@ -324,7 +324,286 @@ class NotificationService {
       order: [['createdAt', 'DESC']]
     });
   }
+
+  //****************************************** */
+
+
+  // Add these methods to your existing services/notifications/notificationService.js class
+// Insert them inside the NotificationService class, before the shutdown method
+
+  /**
+   * Mark notification as read by notification ID and user ID
+   * @param {string} logId - Notification ID
+   * @param {string} userId - User ID for security
+   * @returns {boolean} - Whether the notification was marked as read
+   */
+  async markAsRead(logId, userId) {
+    await this.ensureDbInitialized();
+    const models = db.getModels();
+    
+    const where = { 
+      id: logId,
+      userId // Ensure user can only mark their own notifications
+    };
+    
+    const [updatedCount] = await models.NotificationLog.update(
+      { readAt: new Date() },
+      { where }
+    );
+    
+    return updatedCount > 0;
+  }
+
+  /**
+   * Bulk mark notifications as read
+   * @param {string[]} notificationIds - Array of notification IDs
+   * @param {string} userId - User ID
+   * @returns {Object} - Result with updated count
+   */
+  async bulkMarkAsRead(notificationIds, userId) {
+    await this.ensureDbInitialized();
+    const models = db.getModels();
+    
+    const [updatedCount] = await models.NotificationLog.update(
+      { readAt: new Date() },
+      { 
+        where: {
+          id: { [models.Sequelize.Op.in]: notificationIds },
+          userId, // Ensure user can only mark their own notifications
+          readAt: null // Only unread notifications
+        }
+      }
+    );
+    
+    return { updated: updatedCount };
+  }
+
+  /**
+   * Get notifications by category
+   * @param {string} userId - User ID
+   * @param {string} category - Category name ('activity', 'contracts', 'reminders')
+   * @param {Object} options - Pagination and filter options
+   * @returns {Object} - Notifications with pagination info
+   */
+  async getNotificationsByCategory(userId, category, options = {}) {
+    await this.ensureDbInitialized();
+    const models = db.getModels();
+    
+    const { limit = 20, offset = 0, unreadOnly = false } = options;
+    
+    // Map category to event IDs
+    const eventIds = this.getEventIdsByCategory(category);
+    
+    const where = {
+      userId,
+      eventId: { [models.Sequelize.Op.in]: eventIds }
+    };
+    
+    if (unreadOnly) {
+      where.readAt = null;
+    }
+    
+    return await models.NotificationLog.findAndCountAll({
+      where,
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']],
+      attributes: [
+        'id', 'title', 'body', 'eventId', 'payload', 'status', 
+        'channel', 'platform', 'sentAt', 'deliveredAt', 'readAt', 'createdAt'
+      ]
+    });
+  }
+
+  /**
+   * Get unread notification counts by category
+   * @param {string} userId - User ID
+   * @returns {Object} - Categorized unread counts
+   */
+  async getUnreadCounts(userId) {
+    await this.ensureDbInitialized();
+    const models = db.getModels();
+    
+    const unreadNotifications = await models.NotificationLog.findAll({
+      where: {
+        userId,
+        readAt: null
+      },
+      attributes: ['eventId'],
+      raw: true
+    });
+
+    const categorizedCounts = {
+      activity: 0,
+      contracts: 0,
+      reminders: 0,
+      total: unreadNotifications.length
+    };
+
+    unreadNotifications.forEach(notification => {
+      const category = this.getCategoryFromEventId(notification.eventId);
+      if (categorizedCounts.hasOwnProperty(category)) {
+        categorizedCounts[category]++;
+      }
+    });
+
+    return categorizedCounts;
+  }
+
+  /**
+   * Mark all notifications as read for a user (optionally by category)
+   * @param {string} userId - User ID
+   * @param {string} category - Optional category filter
+   * @returns {Object} - Result with updated count
+   */
+  async markAllAsRead(userId, category = null) {
+    await this.ensureDbInitialized();
+    const models = db.getModels();
+    
+    const where = {
+      userId,
+      readAt: null
+    };
+
+    if (category) {
+      const eventIds = this.getEventIdsByCategory(category);
+      where.eventId = { [models.Sequelize.Op.in]: eventIds };
+    }
+
+    const [updatedCount] = await models.NotificationLog.update(
+      { readAt: new Date() },
+      { where }
+    );
+
+    return { updated: updatedCount };
+  }
+
+  /**
+   * Get notification statistics for a user
+   * @param {string} userId - User ID
+   * @returns {Object} - User's notification statistics
+   */
+  async getNotificationStats(userId) {
+    await this.ensureDbInitialized();
+    const models = db.getModels();
+
+    // Get total counts
+    const totalCount = await models.NotificationLog.count({
+      where: { userId }
+    });
+
+    const unreadCount = await models.NotificationLog.count({
+      where: { userId, readAt: null }
+    });
+
+    const deliveredCount = await models.NotificationLog.count({
+      where: { userId, status: 'delivered' }
+    });
+
+    // Get recent activity (last 7 days)
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    const recentCount = await models.NotificationLog.count({
+      where: {
+        userId,
+        createdAt: { [models.Sequelize.Op.gte]: sevenDaysAgo }
+      }
+    });
+
+    return {
+      total: totalCount,
+      unread: unreadCount,
+      delivered: deliveredCount,
+      recent: recentCount,
+      readRate: totalCount > 0 ? ((totalCount - unreadCount) / totalCount * 100).toFixed(1) : 0
+    };
+  }
+
+  /**
+   * Helper method to get category from event ID
+   * @param {string} eventId - Event ID
+   * @returns {string} - Category name
+   */
+  getCategoryFromEventId(eventId) {
+    const categoryMap = {
+      // Activity events
+      'job_application_received': 'activity',
+      'job_application_sent': 'activity',
+      'job_completed': 'activity',
+      'milestone_completed': 'activity',
+      'new_review': 'activity',
+      'profile_verified': 'activity',
+      'job_posted': 'activity',
+      'application_accepted': 'activity',
+      'application_rejected': 'activity',
+      'new_application_received': 'activity',
+      
+      // Contract events
+      'contract_signed': 'contracts',
+      'contract_updated': 'contracts',
+      'contract_cancelled': 'contracts',
+      'payment_received': 'contracts',
+      'payment_processed': 'contracts',
+      'payment_released': 'contracts',
+      'milestone_payment': 'contracts',
+      'invoice_generated': 'contracts',
+      
+      // Reminder events
+      'payment_due': 'reminders',
+      'profile_incomplete': 'reminders',
+      'account_security': 'reminders',
+      'verification_required': 'reminders',
+      'deadline_approaching': 'reminders',
+      'payment_overdue': 'reminders'
+    };
+    
+    return categoryMap[eventId] || 'activity';
+  }
+
+  /**
+   * Helper method to get event IDs by category
+   * @param {string} category - Category name
+   * @returns {string[]} - Array of event IDs
+   */
+  getEventIdsByCategory(category) {
+    const eventMap = {
+      activity: [
+        'job_application_received',
+        'job_application_sent',
+        'job_completed', 
+        'milestone_completed',
+        'new_review',
+        'profile_verified',
+        'job_posted',
+        'application_accepted',
+        'application_rejected',
+        'new_application_received'
+      ],
+      contracts: [
+        'contract_signed',
+        'contract_updated',
+        'contract_cancelled',
+        'payment_received',
+        'payment_processed',
+        'payment_released',
+        'milestone_payment',
+        'invoice_generated'
+      ],
+      reminders: [
+        'payment_due',
+        'profile_incomplete',
+        'account_security', 
+        'verification_required',
+        'deadline_approaching',
+        'payment_overdue'
+      ]
+    };
+    
+    return eventMap[category] || [];
+  }
   
+
   /**
    * Get notifications for a user
    */

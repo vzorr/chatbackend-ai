@@ -856,4 +856,228 @@ router.get('/all',
 );
 
 
+// Add these routes to your existing routes/notification.js file
+// Insert them before the final module.exports = router;
+
+/**
+ * @route GET /api/v1/notifications/unread/count
+ * @desc Get unread notification count by category
+ * @access Private
+ */
+router.get('/unread/count', 
+  authenticate, 
+  asyncHandler(async (req, res) => {
+    const userId = req.user.id;
+    
+    try {
+      const counts = await notificationService.getUnreadCounts(userId);
+      
+      res.json({
+        success: true,
+        counts
+      });
+    } catch (error) {
+      throw createSystemError('Failed to get unread notification counts', error);
+    }
+  })
+);
+
+/**
+ * @route GET /api/v1/notifications/by-category/:category
+ * @desc Get notifications by category (activity, contracts, reminders)
+ * @access Private
+ */
+router.get('/by-category/:category', 
+  authenticate, 
+  asyncHandler(async (req, res) => {
+    const { category } = req.params;
+    const userId = req.user.id;
+    const { limit = 20, offset = 0, unreadOnly = false } = req.query;
+    
+    // Validate category
+    if (!['activity', 'contracts', 'reminders'].includes(category)) {
+      throw createOperationalError('Invalid category. Must be one of: activity, contracts, reminders', 400, 'INVALID_CATEGORY');
+    }
+    
+    // Validate query parameters
+    const parsedLimit = parseInt(limit);
+    const parsedOffset = parseInt(offset);
+    
+    if (isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 100) {
+      throw createOperationalError('Limit must be a number between 1 and 100', 400, 'INVALID_LIMIT');
+    }
+    
+    if (isNaN(parsedOffset) || parsedOffset < 0) {
+      throw createOperationalError('Offset must be a non-negative number', 400, 'INVALID_OFFSET');
+    }
+    
+    try {
+      const options = {
+        limit: parsedLimit,
+        offset: parsedOffset,
+        unreadOnly: unreadOnly === 'true'
+      };
+      
+      const result = await notificationService.getNotificationsByCategory(userId, category, options);
+      
+      res.json({
+        success: true,
+        notifications: result.rows,
+        total: result.count,
+        category,
+        limit: parsedLimit,
+        offset: parsedOffset,
+        hasMore: (parsedOffset + result.rows.length) < result.count
+      });
+    } catch (error) {
+      throw createSystemError(`Failed to retrieve ${category} notifications`, error);
+    }
+  })
+);
+
+/**
+ * @route POST /api/v1/notifications/read-all
+ * @desc Mark all notifications as read for user
+ * @access Private
+ */
+router.post('/read-all', 
+  authenticate, 
+  asyncHandler(async (req, res) => {
+    const userId = req.user.id;
+    const { category } = req.body; // Optional: mark only specific category as read
+    
+    // Validate category if provided
+    if (category && !['activity', 'contracts', 'reminders'].includes(category)) {
+      throw createOperationalError('Invalid category. Must be one of: activity, contracts, reminders', 400, 'INVALID_CATEGORY');
+    }
+    
+    try {
+      const result = await notificationService.markAllAsRead(userId, category);
+      
+      logger.info('Bulk notifications marked as read', {
+        userId,
+        category: category || 'all',
+        updatedCount: result.updated
+      });
+
+      res.json({
+        success: true,
+        message: `${result.updated} notifications marked as read`,
+        updatedCount: result.updated,
+        category: category || 'all'
+      });
+    } catch (error) {
+      throw createSystemError('Failed to mark all notifications as read', error);
+    }
+  })
+);
+
+/**
+ * @route POST /api/v1/notifications/bulk-read
+ * @desc Mark multiple notifications as read
+ * @access Private
+ */
+router.post('/bulk-read', 
+  authenticate, 
+  asyncHandler(async (req, res) => {
+    const { notificationIds } = req.body;
+    const userId = req.user.id;
+    
+    if (!notificationIds || !Array.isArray(notificationIds)) {
+      throw createOperationalError('notificationIds array is required', 400, 'MISSING_NOTIFICATION_IDS');
+    }
+    
+    if (notificationIds.length === 0) {
+      throw createOperationalError('notificationIds array cannot be empty', 400, 'EMPTY_NOTIFICATION_IDS');
+    }
+    
+    if (notificationIds.length > 100) {
+      throw createOperationalError('Cannot mark more than 100 notifications as read at once', 400, 'TOO_MANY_NOTIFICATIONS');
+    }
+    
+    try {
+      const result = await notificationService.bulkMarkAsRead(notificationIds, userId);
+      
+      logger.info('Bulk notifications marked as read', {
+        userId,
+        requestedCount: notificationIds.length,
+        updatedCount: result.updated
+      });
+
+      res.json({
+        success: true,
+        message: `${result.updated} notifications marked as read`,
+        updatedCount: result.updated
+      });
+    } catch (error) {
+      throw createSystemError('Failed to bulk mark notifications as read', error);
+    }
+  })
+);
+
+/**
+ * @route GET /api/v1/notifications/stats
+ * @desc Get notification statistics for user
+ * @access Private
+ */
+router.get('/stats', 
+  authenticate, 
+  asyncHandler(async (req, res) => {
+    const userId = req.user.id;
+    
+    try {
+      const stats = await notificationService.getNotificationStats(userId);
+      
+      res.json({
+        success: true,
+        stats
+      });
+    } catch (error) {
+      throw createSystemError('Failed to get notification statistics', error);
+    }
+  })
+);
+
+/**
+ * UPDATE EXISTING ROUTE: /api/v1/notifications/:id/read
+ * @desc Mark notification as read
+ * @access Private
+ */
+// Update your existing markAsRead route to use the service method:
+router.post('/:id/read', 
+  authenticate, 
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const userId = req.user.id;
+    
+    if (!id) {
+      throw createOperationalError('Notification ID is required', 400, 'MISSING_NOTIFICATION_ID');
+    }
+    
+    try {
+      const result = await notificationService.markAsRead(id, userId);
+      
+      if (!result) {
+        throw createOperationalError('Notification not found or already read', 404, 'NOTIFICATION_NOT_FOUND');
+      }
+      
+      logger.info('Notification marked as read', {
+        notificationId: id,
+        userId
+      });
+      
+      res.json({
+        success: true,
+        message: 'Notification marked as read'
+      });
+    } catch (error) {
+      if (error.isOperational) {
+        throw error;
+      }
+      throw createSystemError('Failed to mark notification as read', error);
+    }
+  })
+);
+
+
 module.exports = router;
