@@ -1,55 +1,142 @@
 // src/db/seeders/notification-template-seeder.js
-const { v4: uuidv4 } = require('uuid');
-const db = require('../index'); // Uses db.initialize() and db.getModels()
 
-const businessEventTemplates = [
+'use strict';
+const { v4: uuidv4 } = require('uuid');
+const db = require('../index'); // Assumes your db has initialize() and getModels()
+
+// Customer and USTA Templates
+const notificationTemplates = [
+  // Contract Events - Customer App
   {
-    appId: 'vortexhive-main',
-    eventId: 'job_application_submitted',
-    eventName: 'Job Application Submitted',
-    title: 'New Application Received',
-    body: 'A new application has been received for {{jobTitle}}',
-    payload: {
-      type: 'job_application',
-      jobId: '{{jobId}}',
-      applicantId: '{{applicantId}}',
-      deepLink: 'vortexhive://jobs/applications/{{jobId}}'
-    },
-    priority: 'high',
-    category: 'jobs',
-    defaultEnabled: true
-  },
-  {
-    appId: 'vortexhive-main',
-    eventId: 'contract_created',
-    eventName: 'Contract Created',
-    title: 'New Contract',
-    body: 'A new contract has been created for {{projectName}}',
+    appId: 'com.myusta.myustacustomer',
+    eventId: 'contract.sent',
+    eventName: 'Contract Sent',
+    title: 'New Contract Sent',
+    body: '{{customerName}} has sent you a contract for "{{jobTitle}}".',
     payload: {
       type: 'contract',
       contractId: '{{contractId}}',
-      deepLink: 'vortexhive://contracts/{{contractId}}'
+      jobId: '{{jobId}}',
+      deepLink: 'myustacustomer://contracts/{{contractId}}'
     },
     priority: 'high',
     category: 'contracts',
     defaultEnabled: true
   },
   {
-    appId: 'vortexhive-main',
-    eventId: 'milestone_created',
-    eventName: 'Milestone Created',
-    title: 'New Milestone',
-    body: 'A new milestone has been created for {{projectName}}: {{milestoneName}}',
+    appId: 'com.myusta.myustacustomer',
+    eventId: 'contract.accepted',
+    eventName: 'Contract Accepted',
+    title: 'Contract Accepted',
+    body: '{{ustaName}} has accepted your contract for "{{jobTitle}}".',
     payload: {
-      type: 'milestone',
-      milestoneId: '{{milestoneId}}',
-      projectId: '{{projectId}}',
-      deepLink: 'vortexhive://projects/{{projectId}}/milestones/{{milestoneId}}'
+      type: 'contract',
+      contractId: '{{contractId}}',
+      jobId: '{{jobId}}',
+      deepLink: 'myustacustomer://contracts/{{contractId}}'
     },
-    priority: 'normal',
-    category: 'milestones',
+    priority: 'high',
+    category: 'contracts',
+    defaultEnabled: true
+  },
+  {
+    appId: 'com.myusta.myustacustomer',
+    eventId: 'contract.rejected',
+    eventName: 'Contract Rejected',
+    title: 'Contract Rejected',
+    body: '{{ustaName}} has rejected your contract for "{{jobTitle}}".',
+    payload: {
+      type: 'contract',
+      contractId: '{{contractId}}',
+      jobId: '{{jobId}}',
+      deepLink: 'myustacustomer://contracts/{{contractId}}'
+    },
+    priority: 'high',
+    category: 'contracts',
+    defaultEnabled: true
+  },
+  {
+    appId: 'com.myusta.myustacustomer',
+    eventId: 'contract.completed',
+    eventName: 'Contract Completed',
+    title: 'Contract Completed',
+    body: 'Congratulations! The contract for "{{jobTitle}}" has been completed.',
+    payload: {
+      type: 'contract',
+      contractId: '{{contractId}}',
+      jobId: '{{jobId}}',
+      deepLink: 'myustacustomer://contracts/{{contractId}}'
+    },
+    priority: 'high',
+    category: 'contracts',
+    defaultEnabled: true
+  },
+  // Contract Events - USTA App
+  {
+    appId: 'com.myusta.myusta',
+    eventId: 'contract.sent',
+    eventName: 'Contract Sent',
+    title: 'New Contract Sent',
+    body: '{{customerName}} has sent you a contract for "{{jobTitle}}".',
+    payload: {
+      type: 'contract',
+      contractId: '{{contractId}}',
+      jobId: '{{jobId}}',
+      deepLink: 'myusta://contracts/{{contractId}}'
+    },
+    priority: 'high',
+    category: 'contracts',
+    defaultEnabled: true
+  },
+  {
+    appId: 'com.myusta.myusta',
+    eventId: 'contract.accepted',
+    eventName: 'Contract Accepted',
+    title: 'Contract Accepted',
+    body: 'You have accepted the contract for "{{jobTitle}}".',
+    payload: {
+      type: 'contract',
+      contractId: '{{contractId}}',
+      jobId: '{{jobId}}',
+      deepLink: 'myusta://contracts/{{contractId}}'
+    },
+    priority: 'high',
+    category: 'contracts',
+    defaultEnabled: true
+  },
+  {
+    appId: 'com.myusta.myusta',
+    eventId: 'contract.rejected',
+    eventName: 'Contract Rejected',
+    title: 'Contract Rejected',
+    body: 'You have rejected the contract for "{{jobTitle}}".',
+    payload: {
+      type: 'contract',
+      contractId: '{{contractId}}',
+      jobId: '{{jobId}}',
+      deepLink: 'myusta://contracts/{{contractId}}'
+    },
+    priority: 'high',
+    category: 'contracts',
+    defaultEnabled: true
+  },
+  {
+    appId: 'com.myusta.myusta',
+    eventId: 'contract.completed',
+    eventName: 'Contract Completed',
+    title: 'Contract Completed',
+    body: 'Congratulations! You have successfully completed the contract for "{{jobTitle}}".',
+    payload: {
+      type: 'contract',
+      contractId: '{{contractId}}',
+      jobId: '{{jobId}}',
+      deepLink: 'myusta://contracts/{{contractId}}'
+    },
+    priority: 'high',
+    category: 'contracts',
     defaultEnabled: true
   }
+  // Add more templates here (Activity, Reminder, etc.) similarly
 ];
 
 async function seedNotificationTemplates() {
@@ -59,8 +146,11 @@ async function seedNotificationTemplates() {
 
     const { NotificationTemplate } = db.getModels();
 
+    console.log('🧹 Deleting existing notification templates...');
+    await NotificationTemplate.destroy({ where: {}, truncate: true });
+
     console.log('🚀 Seeding Notification Templates...');
-    for (const template of businessEventTemplates) {
+    for (const template of notificationTemplates) {
       const [record, created] = await NotificationTemplate.findOrCreate({
         where: {
           appId: template.appId,
@@ -81,9 +171,9 @@ async function seedNotificationTemplates() {
       });
 
       if (created) {
-        console.log(`✅ Created: ${template.eventId}`);
+        console.log(`✅ Created: [${template.appId}] ${template.eventId}`);
       } else {
-        console.log(`⚠️ Skipped (already exists): ${template.eventId}`);
+        console.log(`⚠️ Skipped (already exists): [${template.appId}] ${template.eventId}`);
       }
     }
 
