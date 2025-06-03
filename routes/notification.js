@@ -1,4 +1,4 @@
-// routes/notification.js - CLEAN APPROACH
+// routes/notification.js - COMPLETE FIXED VERSION
 const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
@@ -10,20 +10,12 @@ const db = require('../db/models');
 // ✅ BETTER: Direct import from exception handler
 const { asyncHandler, createOperationalError, createSystemError } = require('../middleware/exceptionHandler');
 
-
-
-
-/**
- * @route GET /api/v1/notifications/templates
- * @desc Get notification templates
- * @access Private
- */
 /**
  * @route GET /api/v1/notifications/templates
  * @desc Get notification templates (filtered by appId if provided)
  * @access Private
  */
- router.get('/templates', 
+router.get('/templates', 
   authenticate, 
   asyncHandler(async (req, res) => {
     const { appId } = req.query;
@@ -54,6 +46,11 @@ const { asyncHandler, createOperationalError, createSystemError } = require('../
         templates
       });
     } catch (error) {
+      logger.error('Failed to retrieve notification templates', {
+        appId,
+        error: error.message,
+        stack: error.stack
+      });
       throw createSystemError('Failed to retrieve notification templates', error);
     }
   })
@@ -93,6 +90,12 @@ router.get('/templates/:eventId',
       if (error.isOperational) {
         throw error;
       }
+      logger.error('Failed to retrieve notification template', {
+        appId,
+        eventId,
+        error: error.message,
+        stack: error.stack
+      });
       throw createSystemError('Failed to retrieve notification template', error);
     }
   })
@@ -243,6 +246,12 @@ router.delete('/templates/:eventId',
       if (error.isOperational) {
         throw error;
       }
+      logger.error('Failed to delete notification template', {
+        appId,
+        eventId,
+        error: error.message,
+        stack: error.stack
+      });
       throw createSystemError('Failed to delete notification template', error);
     }
   })
@@ -271,6 +280,12 @@ router.get('/preferences',
         preferences
       });
     } catch (error) {
+      logger.error('Failed to retrieve user notification preferences', {
+        userId,
+        appId,
+        error: error.message,
+        stack: error.stack
+      });
       throw createSystemError('Failed to retrieve user notification preferences', error);
     }
   })
@@ -331,168 +346,14 @@ router.put('/preferences/:eventId',
         preference
       });
     } catch (error) {
-      throw createSystemError('Failed to update notification preference', error);
-    }
-  })
-);
-
-/**
- * @route POST /api/v1/notifications/send
- * @desc Trigger notification manually
- * @access Private (Admin or API key)
- */
-router.post('/send', 
-  authenticate, 
-  asyncHandler(async (req, res) => {
-    const {
-      appId,
-      eventId,
-      userId,
-      data = {}
-    } = req.body;
-    
-    // Validate required fields
-    if (!appId || !eventId || !userId) {
-      throw createOperationalError('Missing required fields: appId, eventId, userId', 400, 'MISSING_REQUIRED_FIELDS');
-    }
-    
-    // Validate userId format (assuming UUID)
-    if (typeof userId !== 'string' || userId.trim().length === 0) {
-      throw createOperationalError('Invalid userId format', 400, 'INVALID_USER_ID');
-    }
-    
-    // Validate data is an object
-    if (data !== null && typeof data !== 'object') {
-      throw createOperationalError('Data must be an object', 400, 'INVALID_DATA_TYPE');
-    }
-    
-    try {
-      const result = await notificationService.processNotification(
-        appId,
-        eventId,
+      logger.error('Failed to update notification preference', {
         userId,
-        data
-      );
-      
-      logger.info('Manual notification sent', {
-        appId,
         eventId,
-        userId,
-        operationId: result.operationId,
-        triggeredBy: req.user.id
-      });
-      
-      res.json({
-        success: true,
-        result
-      });
-    } catch (error) {
-      logger.error('Failed to send manual notification', {
         appId,
-        eventId,
-        userId,
         error: error.message,
-        triggeredBy: req.user.id
+        stack: error.stack
       });
-      
-      if (error.code === 'TEMPLATE_NOT_FOUND') {
-        throw createOperationalError('Notification template not found', 404, 'TEMPLATE_NOT_FOUND');
-      }
-      
-      if (error.code === 'USER_NOT_FOUND') {
-        throw createOperationalError('Target user not found', 404, 'USER_NOT_FOUND');
-      }
-      
-      throw createSystemError('Failed to process notification', error);
-    }
-  })
-);
-
-/**
- * @route GET /api/v1/notifications
- * @desc Get user's notifications
- * @access Private
- */
-router.get('/', 
-  authenticate, 
-  asyncHandler(async (req, res) => {
-    const userId = req.user.id;
-    const { limit = 20, offset = 0, unreadOnly = false } = req.query;
-    
-    // Validate query parameters
-    const parsedLimit = parseInt(limit);
-    const parsedOffset = parseInt(offset);
-    
-    if (isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 100) {
-      throw createOperationalError('Limit must be a number between 1 and 100', 400, 'INVALID_LIMIT');
-    }
-    
-    if (isNaN(parsedOffset) || parsedOffset < 0) {
-      throw createOperationalError('Offset must be a non-negative number', 400, 'INVALID_OFFSET');
-    }
-    
-    const options = {
-      limit: parsedLimit,
-      offset: parsedOffset,
-      unreadOnly: unreadOnly === 'true'
-    };
-    
-    try {
-      const { rows: notifications, count } = await notificationService.getUserNotifications(
-        userId,
-        options
-      );
-      
-      res.json({
-        success: true,
-        notifications,
-        total: count,
-        limit: options.limit,
-        offset: options.offset,
-        hasMore: (options.offset + notifications.length) < count
-      });
-    } catch (error) {
-      throw createSystemError('Failed to retrieve user notifications', error);
-    }
-  })
-);
-
-/**
- * @route POST /api/v1/notifications/:id/read
- * @desc Mark notification as read
- * @access Private
- */
-router.post('/:id/read', 
-  authenticate, 
-  asyncHandler(async (req, res) => {
-    const { id } = req.params;
-    const userId = req.user.id;
-    
-    if (!id) {
-      throw createOperationalError('Notification ID is required', 400, 'MISSING_NOTIFICATION_ID');
-    }
-    
-    try {
-      const result = await notificationService.markAsRead(id, userId);
-      
-      if (!result) {
-        throw createOperationalError('Notification not found or already read', 404, 'NOTIFICATION_NOT_FOUND');
-      }
-      
-      logger.info('Notification marked as read', {
-        notificationId: id,
-        userId
-      });
-      
-      res.json({
-        success: true,
-        message: 'Notification marked as read'
-      });
-    } catch (error) {
-      if (error.isOperational) {
-        throw error;
-      }
-      throw createSystemError('Failed to mark notification as read', error);
+      throw createSystemError('Failed to update notification preference', error);
     }
   })
 );
@@ -622,7 +483,86 @@ router.post('/device',
         throw createOperationalError(`Validation failed: ${details}`, 400, 'VALIDATION_ERROR');
       }
       
+      logger.error('Failed to register device token', {
+        userId,
+        deviceId,
+        platform,
+        error: error.message,
+        stack: error.stack
+      });
       throw createSystemError('Failed to register device token', error);
+    }
+  })
+);
+
+/**
+ * @route POST /api/v1/notifications/send
+ * @desc Trigger notification manually
+ * @access Private (Admin or API key)
+ */
+router.post('/send', 
+  authenticate, 
+  asyncHandler(async (req, res) => {
+    const {
+      appId,
+      eventId,
+      userId,
+      data = {}
+    } = req.body;
+    
+    // Validate required fields
+    if (!appId || !eventId || !userId) {
+      throw createOperationalError('Missing required fields: appId, eventId, userId', 400, 'MISSING_REQUIRED_FIELDS');
+    }
+    
+    // Validate userId format (assuming UUID)
+    if (typeof userId !== 'string' || userId.trim().length === 0) {
+      throw createOperationalError('Invalid userId format', 400, 'INVALID_USER_ID');
+    }
+    
+    // Validate data is an object
+    if (data !== null && typeof data !== 'object') {
+      throw createOperationalError('Data must be an object', 400, 'INVALID_DATA_TYPE');
+    }
+    
+    try {
+      const result = await notificationService.processNotification(
+        appId,
+        eventId,
+        userId,
+        data
+      );
+      
+      logger.info('Manual notification sent', {
+        appId,
+        eventId,
+        userId,
+        operationId: result.operationId,
+        triggeredBy: req.user.id
+      });
+      
+      res.json({
+        success: true,
+        result
+      });
+    } catch (error) {
+      logger.error('Failed to send manual notification', {
+        appId,
+        eventId,
+        userId,
+        error: error.message,
+        triggeredBy: req.user.id
+      });
+      
+      if (error.message && error.message.includes('Template not found')) {
+        throw createOperationalError('Notification template not found', 404, 'TEMPLATE_NOT_FOUND');
+      }
+      
+      if (error.code === 'USER_NOT_FOUND') {
+        throw createOperationalError('Target user not found', 404, 'USER_NOT_FOUND');
+      }
+      
+      throw createSystemError('Failed to process notification', error);
     }
   })
 );
@@ -762,104 +702,6 @@ router.post('/trigger-event',
 );
 
 /**
- * @route POST /api/v1/notifications/bulk-read
- * @desc Mark multiple notifications as read
- * @access Private
- */
-router.post('/bulk-read', 
-  authenticate, 
-  asyncHandler(async (req, res) => {
-    const { notificationIds } = req.body;
-    const userId = req.user.id;
-    
-    if (!notificationIds || !Array.isArray(notificationIds)) {
-      throw createOperationalError('notificationIds array is required', 400, 'MISSING_NOTIFICATION_IDS');
-    }
-    
-    if (notificationIds.length === 0) {
-      throw createOperationalError('notificationIds array cannot be empty', 400, 'EMPTY_NOTIFICATION_IDS');
-    }
-    
-    if (notificationIds.length > 100) {
-      throw createOperationalError('Cannot mark more than 100 notifications as read at once', 400, 'TOO_MANY_NOTIFICATIONS');
-    }
-    
-    try {
-      const result = await notificationService.bulkMarkAsRead(notificationIds, userId);
-      
-      logger.info('Bulk notifications marked as read', {
-        userId,
-        count: result.updated,
-        notificationIds: notificationIds.slice(0, 10) // Log first 10 IDs
-      });
-      
-      res.json({
-        success: true,
-        message: `${result.updated} notifications marked as read`,
-        updated: result.updated
-      });
-    } catch (error) {
-      throw createSystemError('Failed to bulk mark notifications as read', error);
-    }
-  })
-);
-
-/**
- * @route GET /api/v1/notifications/all
- * @desc Get all notifications (Admin Only)
- * @access Private (Admin Only)
- */
-router.get('/all', 
-  authenticate, 
-  //authorize('administrator'), // Only admins
-  asyncHandler(async (req, res) => {
-    const { limit = 50, offset = 0, unreadOnly = false, appId, userId, eventId } = req.query;
-    
-    // Validation
-    const parsedLimit = parseInt(limit);
-    const parsedOffset = parseInt(offset);
-
-    if (isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 200) {
-      throw createOperationalError('Limit must be a number between 1 and 200', 400, 'INVALID_LIMIT');
-    }
-
-    if (isNaN(parsedOffset) || parsedOffset < 0) {
-      throw createOperationalError('Offset must be a non-negative number', 400, 'INVALID_OFFSET');
-    }
-
-    const options = {
-      limit: parsedLimit,
-      offset: parsedOffset,
-      filters: {}
-    };
-
-    if (unreadOnly === 'true') options.filters.read = false;
-    if (appId) options.filters.appId = appId;
-    if (userId) options.filters.userId = userId;
-    if (eventId) options.filters.eventId = eventId;
-    
-    try {
-      const { rows: notifications, count } = await notificationService.getAllNotifications(options);
-      
-      res.json({
-        success: true,
-        notifications,
-        total: count,
-        limit: options.limit,
-        offset: options.offset,
-        hasMore: (options.offset + notifications.length) < count
-      });
-    } catch (error) {
-      throw createSystemError('Failed to retrieve all notifications', error);
-    }
-  })
-);
-
-
-// Add these routes to your existing routes/notification.js file
-// Insert them before the final module.exports = router;
-
-/**
  * @route GET /api/v1/notifications/unread/count
  * @desc Get unread notification count by category
  * @access Private
@@ -870,14 +712,49 @@ router.get('/unread/count',
     const userId = req.user.id;
     
     try {
-      const counts = await notificationService.getUnreadCounts(userId);
+      const result = await notificationService.getUnreadCounts(userId);
       
+      // The service method returns { counts: { ... } }
       res.json({
         success: true,
-        counts
+        counts: result.counts || {}
       });
     } catch (error) {
+      logger.error('Failed to get unread notification counts', {
+        userId,
+        error: error.message,
+        stack: error.stack
+      });
       throw createSystemError('Failed to get unread notification counts', error);
+    }
+  })
+);
+
+/**
+ * @route GET /api/v1/notifications/stats
+ * @desc Get notification statistics for user
+ * @access Private
+ */
+router.get('/stats', 
+  authenticate, 
+  asyncHandler(async (req, res) => {
+    const userId = req.user.id;
+    
+    try {
+      const result = await notificationService.getNotificationStats(userId);
+      
+      // The service method returns { stats: { ... } }
+      res.json({
+        success: true,
+        stats: result.stats || {}
+      });
+    } catch (error) {
+      logger.error('Failed to get notification statistics', {
+        userId,
+        error: error.message,
+        stack: error.stack
+      });
+      throw createSystemError('Failed to get notification statistics', error);
     }
   })
 );
@@ -920,54 +797,189 @@ router.get('/by-category/:category',
       
       const result = await notificationService.getNotificationsByCategory(userId, category, options);
       
+      // The service method returns { success: true, notifications: [...], total: X, hasMore: boolean }
+      const { notifications, total, hasMore } = result;
+      
       res.json({
         success: true,
-        notifications: result.rows,
-        total: result.count,
+        notifications: notifications || [],
+        total: total || 0,
         category,
         limit: parsedLimit,
         offset: parsedOffset,
-        hasMore: (parsedOffset + result.rows.length) < result.count
+        hasMore: hasMore || false
       });
     } catch (error) {
+      logger.error('Failed to retrieve notifications by category', {
+        category,
+        userId,
+        error: error.message,
+        stack: error.stack
+      });
+      
       throw createSystemError(`Failed to retrieve ${category} notifications`, error);
     }
   })
 );
 
 /**
- * @route POST /api/v1/notifications/read-all
- * @desc Mark all notifications as read for user
+ * @route GET /api/v1/notifications
+ * @desc Get user's notifications
  * @access Private
  */
-router.post('/read-all', 
+router.get('/', 
   authenticate, 
   asyncHandler(async (req, res) => {
     const userId = req.user.id;
-    const { category } = req.body; // Optional: mark only specific category as read
+    const { limit = 20, offset = 0, unreadOnly = false } = req.query;
     
-    // Validate category if provided
-    if (category && !['activity', 'contracts', 'reminders'].includes(category)) {
-      throw createOperationalError('Invalid category. Must be one of: activity, contracts, reminders', 400, 'INVALID_CATEGORY');
+    // Validate query parameters
+    const parsedLimit = parseInt(limit);
+    const parsedOffset = parseInt(offset);
+    
+    if (isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 100) {
+      throw createOperationalError('Limit must be a number between 1 and 100', 400, 'INVALID_LIMIT');
+    }
+    
+    if (isNaN(parsedOffset) || parsedOffset < 0) {
+      throw createOperationalError('Offset must be a non-negative number', 400, 'INVALID_OFFSET');
+    }
+    
+    const options = {
+      limit: parsedLimit,
+      offset: parsedOffset,
+      unreadOnly: unreadOnly === 'true'
+    };
+    
+    try {
+      const result = await notificationService.getUserNotifications(userId, options);
+      
+      // getUserNotifications returns { rows, count } (Sequelize format)
+      const { rows: notifications, count } = result;
+      
+      res.json({
+        success: true,
+        notifications: notifications || [],
+        total: count || 0,
+        limit: options.limit,
+        offset: options.offset,
+        hasMore: (options.offset + notifications.length) < count
+      });
+    } catch (error) {
+      logger.error('Failed to retrieve user notifications', {
+        userId,
+        options,
+        error: error.message,
+        stack: error.stack
+      });
+      
+      throw createSystemError('Failed to retrieve user notifications', error);
+    }
+  })
+);
+
+/**
+ * @route GET /api/v1/notifications/all
+ * @desc Get all notifications (Admin Only)
+ * @access Private (Admin Only)
+ */
+router.get('/all', 
+  authenticate, 
+  // authorize('administrator'), // Uncomment if you want admin-only access
+  asyncHandler(async (req, res) => {
+    const { limit = 50, offset = 0, unreadOnly = false, appId, userId, eventId } = req.query;
+    
+    // Validation
+    const parsedLimit = parseInt(limit);
+    const parsedOffset = parseInt(offset);
+
+    if (isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 200) {
+      throw createOperationalError('Limit must be a number between 1 and 200', 400, 'INVALID_LIMIT');
+    }
+
+    if (isNaN(parsedOffset) || parsedOffset < 0) {
+      throw createOperationalError('Offset must be a non-negative number', 400, 'INVALID_OFFSET');
+    }
+
+    const options = {
+      limit: parsedLimit,
+      offset: parsedOffset,
+      filters: {}
+    };
+
+    if (unreadOnly === 'true') options.filters.read = false;
+    if (appId) options.filters.appId = appId;
+    if (userId) options.filters.userId = userId;
+    if (eventId) options.filters.eventId = eventId;
+    
+    try {
+      const result = await notificationService.getAllNotifications(options);
+      
+      // getAllNotifications returns { rows, count } (Sequelize format)
+      const { rows: notifications, count } = result;
+      
+      res.json({
+        success: true,
+        notifications: notifications || [],
+        total: count || 0,
+        limit: options.limit,
+        offset: options.offset,
+        hasMore: (options.offset + notifications.length) < count
+      });
+    } catch (error) {
+      logger.error('Failed to retrieve all notifications', {
+        options,
+        error: error.message,
+        stack: error.stack
+      });
+      
+      throw createSystemError('Failed to retrieve all notifications', error);
+    }
+  })
+);
+
+/**
+ * @route POST /api/v1/notifications/:id/read
+ * @desc Mark notification as read
+ * @access Private
+ */
+router.post('/:id/read', 
+  authenticate, 
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const userId = req.user.id;
+    
+    if (!id) {
+      throw createOperationalError('Notification ID is required', 400, 'MISSING_NOTIFICATION_ID');
     }
     
     try {
-      const result = await notificationService.markAllAsRead(userId, category);
+      const result = await notificationService.markAsRead(id, userId);
       
-      logger.info('Bulk notifications marked as read', {
-        userId,
-        category: category || 'all',
-        updatedCount: result.updated
+      if (!result) {
+        throw createOperationalError('Notification not found or already read', 404, 'NOTIFICATION_NOT_FOUND');
+      }
+      
+      logger.info('Notification marked as read', {
+        notificationId: id,
+        userId
       });
-
+      
       res.json({
         success: true,
-        message: `${result.updated} notifications marked as read`,
-        updatedCount: result.updated,
-        category: category || 'all'
+        message: 'Notification marked as read'
       });
     } catch (error) {
-      throw createSystemError('Failed to mark all notifications as read', error);
+      if (error.isOperational) {
+        throw error;
+      }
+      logger.error('Failed to mark notification as read', {
+        notificationId: id,
+        userId,
+        error: error.message,
+        stack: error.stack
+      });
+      throw createSystemError('Failed to mark notification as read', error);
     }
   })
 );
@@ -1010,74 +1022,60 @@ router.post('/bulk-read',
         updatedCount: result.updated
       });
     } catch (error) {
+      logger.error('Failed to bulk mark notifications as read', {
+        userId,
+        notificationIds: notificationIds.slice(0, 5), // Log first 5 IDs only
+        error: error.message,
+        stack: error.stack
+      });
+      
       throw createSystemError('Failed to bulk mark notifications as read', error);
     }
   })
 );
 
 /**
- * @route GET /api/v1/notifications/stats
- * @desc Get notification statistics for user
+ * @route POST /api/v1/notifications/read-all
+ * @desc Mark all notifications as read for user
  * @access Private
  */
-router.get('/stats', 
+router.post('/read-all', 
   authenticate, 
   asyncHandler(async (req, res) => {
     const userId = req.user.id;
+    const { category } = req.body; // Optional: mark only specific category as read
     
-    try {
-      const stats = await notificationService.getNotificationStats(userId);
-      
-      res.json({
-        success: true,
-        stats
-      });
-    } catch (error) {
-      throw createSystemError('Failed to get notification statistics', error);
-    }
-  })
-);
-
-/**
- * UPDATE EXISTING ROUTE: /api/v1/notifications/:id/read
- * @desc Mark notification as read
- * @access Private
- */
-// Update your existing markAsRead route to use the service method:
-router.post('/:id/read', 
-  authenticate, 
-  asyncHandler(async (req, res) => {
-    const { id } = req.params;
-    const userId = req.user.id;
-    
-    if (!id) {
-      throw createOperationalError('Notification ID is required', 400, 'MISSING_NOTIFICATION_ID');
+    // Validate category if provided
+    if (category && !['activity', 'contracts', 'reminders'].includes(category)) {
+      throw createOperationalError('Invalid category. Must be one of: activity, contracts, reminders', 400, 'INVALID_CATEGORY');
     }
     
     try {
-      const result = await notificationService.markAsRead(id, userId);
+      const result = await notificationService.markAllAsRead(userId, category);
       
-      if (!result) {
-        throw createOperationalError('Notification not found or already read', 404, 'NOTIFICATION_NOT_FOUND');
-      }
-      
-      logger.info('Notification marked as read', {
-        notificationId: id,
-        userId
+      logger.info('All notifications marked as read', {
+        userId,
+        category: category || 'all',
+        updatedCount: result.updated
       });
-      
+
       res.json({
         success: true,
-        message: 'Notification marked as read'
+        message: `${result.updated} notifications marked as read`,
+        updatedCount: result.updated,
+        category: category || 'all'
       });
     } catch (error) {
-      if (error.isOperational) {
-        throw error;
-      }
-      throw createSystemError('Failed to mark notification as read', error);
+      logger.error('Failed to mark all notifications as read', {
+        userId,
+        category: category || 'all',
+        error: error.message,
+        stack: error.stack
+      });
+      
+      throw createSystemError('Failed to mark all notifications as read', error);
     }
   })
 );
-
 
 module.exports = router;
