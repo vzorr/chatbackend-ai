@@ -708,6 +708,7 @@ class NotificationService {
     return this.providers.get('FCM');
   }
 
+
   /**
    * Handle invalid device token
    */
@@ -755,6 +756,8 @@ class NotificationService {
     }
   }
 
+
+
   /**
    * Check if error indicates invalid token
    */
@@ -769,6 +772,317 @@ class NotificationService {
     return invalidTokenCodes.includes(error.code);
   }
 
+  // Add these methods to your existing notificationService.js
+// Insert them before the final module.exports = new NotificationService();
+
+  /**
+   * Create bulk test notifications for debugging
+   * @param {string} userId - User ID
+   * @param {Array} notificationData - Array of notification objects
+   * @returns {Promise} - Creation result
+   */
+  async createBulkNotifications(userId, notificationData) {
+    await this.ensureDbInitialized();
+    const models = db.getModels();
+    
+    try {
+      const notifications = notificationData.map(data => ({
+        id: data.id || uuidv4(),
+        userId,
+        eventId: data.eventId,
+        appId: data.appId || 'freelance-app',
+        title: data.title,
+        body: data.body,
+        payload: data.payload || {},
+        status: data.status || 'delivered',
+        channel: data.channel || 'push',
+        platform: data.platform || 'mobile',
+        createdAt: data.createdAt || new Date(),
+        sentAt: data.sentAt || new Date(),
+        deliveredAt: data.deliveredAt || new Date(),
+        readAt: data.readAt || null
+      }));
+
+      const result = await models.NotificationLog.bulkCreate(notifications);
+      
+      logger.info('Bulk notifications created', {
+        userId,
+        count: result.length
+      });
+
+      return result;
+    } catch (error) {
+      logger.error('Failed to create bulk notifications', {
+        userId,
+        error: error.message,
+        stack: error.stack
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Get raw notification data with detailed breakdown for debugging
+   * @param {string} userId - User ID
+   * @param {number} limit - Limit of notifications to return
+   * @returns {Object} - Raw data with analysis
+   */
+  async getRawNotificationData(userId, limit = 50) {
+    await this.ensureDbInitialized();
+    const models = db.getModels();
+
+    try {
+      // Get raw notifications
+      const rawNotifications = await models.NotificationLog.findAll({
+        where: { userId },
+        order: [['createdAt', 'DESC']],
+        limit,
+        raw: true
+      });
+
+      // Get total count
+      const totalCount = await models.NotificationLog.count({
+        where: { userId }
+      });
+
+      // Get unread count
+      const unreadCount = await models.NotificationLog.count({
+        where: { userId, readAt: null }
+      });
+
+      // Get counts by category
+      const categoryCounts = {};
+      const categories = ['activity', 'contracts', 'reminders'];
+      
+      for (const category of categories) {
+        const eventIds = this.getEventIdsByCategory(category);
+        categoryCounts[category] = await models.NotificationLog.count({
+          where: { 
+            userId, 
+            eventId: { [models.Sequelize.Op.in]: eventIds }
+          }
+        });
+      }
+
+      // Group by event ID
+      const eventCounts = {};
+      rawNotifications.forEach(notification => {
+        eventCounts[notification.eventId] = (eventCounts[notification.eventId] || 0) + 1;
+      });
+
+      // Transform sample notifications
+      const sampleTransformed = rawNotifications.slice(0, 5).map(n => ({
+        id: n.id,
+        title: n.title,
+        body: n.body,
+        eventId: n.eventId,
+        category: this.getCategoryFromEventId(n.eventId),
+        read: !!n.readAt,
+        createdAt: n.createdAt,
+        payload: n.payload
+      }));
+
+      return {
+        success: true,
+        debug: {
+          userId,
+          totalNotifications: totalCount,
+          unreadCount,
+          categoryCounts,
+          eventCounts,
+          rawNotifications: rawNotifications.slice(0, 10), // First 10 for inspection
+          sampleTransformed,
+          databaseStructure: {
+            tableExists: true,
+            hasData: totalCount > 0,
+            oldestNotification: rawNotifications.length > 0 ? rawNotifications[rawNotifications.length - 1].createdAt : null,
+            newestNotification: rawNotifications.length > 0 ? rawNotifications[0].createdAt : null,
+            returnedCount: rawNotifications.length,
+            totalCount
+          }
+        }
+      };
+    } catch (error) {
+      logger.error('Failed to get raw notification data', {
+        userId,
+        error: error.message,
+        stack: error.stack
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Clear all notifications for a user (debug only)
+   * @param {string} userId - User ID
+   * @param {string} appId - App ID filter (optional)
+   * @returns {Object} - Deletion result
+   */
+  async clearUserNotifications(userId, appId = null) {
+    await this.ensureDbInitialized();
+    const models = db.getModels();
+
+    try {
+      const whereClause = { userId };
+      if (appId) {
+        whereClause.appId = appId;
+      }
+
+      // Count before deletion
+      const beforeCount = await models.NotificationLog.count({
+        where: whereClause
+      });
+
+      // Delete notifications
+      const deletedCount = await models.NotificationLog.destroy({
+        where: whereClause
+      });
+
+      logger.info('User notifications cleared', {
+        userId,
+        appId,
+        beforeCount,
+        deletedCount
+      });
+
+      return {
+        success: true,
+        beforeCount,
+        deletedCount
+      };
+    } catch (error) {
+      logger.error('Failed to clear user notifications', {
+        userId,
+        appId,
+        error: error.message,
+        stack: error.stack
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Get detailed notification statistics for debugging
+   * @param {string} userId - User ID
+   * @returns {Object} - Detailed statistics
+   */
+  async getDetailedNotificationStats(userId) {
+    await this.ensureDbInitialized();
+    const models = db.getModels();
+
+    try {
+      // Basic counts
+      const totalCount = await models.NotificationLog.count({
+        where: { userId }
+      });
+
+      const unreadCount = await models.NotificationLog.count({
+        where: { userId, readAt: null }
+      });
+
+      const deliveredCount = await models.NotificationLog.count({
+        where: { userId, status: 'delivered' }
+      });
+
+      // Category counts
+      const activityEvents = this.getEventIdsByCategory('activity');
+      const contractEvents = this.getEventIdsByCategory('contracts');
+      const reminderEvents = this.getEventIdsByCategory('reminders');
+
+      const [activityCount, contractCount, reminderCount] = await Promise.all([
+        models.NotificationLog.count({
+          where: { userId, eventId: { [models.Sequelize.Op.in]: activityEvents } }
+        }),
+        models.NotificationLog.count({
+          where: { userId, eventId: { [models.Sequelize.Op.in]: contractEvents } }
+        }),
+        models.NotificationLog.count({
+          where: { userId, eventId: { [models.Sequelize.Op.in]: reminderEvents } }
+        })
+      ]);
+
+      // Event type breakdown
+      const eventCounts = await models.NotificationLog.findAll({
+        where: { userId },
+        attributes: [
+          'eventId',
+          [models.Sequelize.fn('COUNT', models.Sequelize.col('eventId')), 'count']
+        ],
+        group: ['eventId'],
+        raw: true
+      });
+
+      // Recent activity (last 7 days)
+      const sevenDaysAgo = new Date();
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+      const recentCount = await models.NotificationLog.count({
+        where: {
+          userId,
+          createdAt: { [models.Sequelize.Op.gte]: sevenDaysAgo }
+        }
+      });
+
+      // Platform breakdown
+      const platformCounts = await models.NotificationLog.findAll({
+        where: { userId },
+        attributes: [
+          'platform',
+          [models.Sequelize.fn('COUNT', models.Sequelize.col('platform')), 'count']
+        ],
+        group: ['platform'],
+        raw: true
+      });
+
+      // Status breakdown
+      const statusCounts = await models.NotificationLog.findAll({
+        where: { userId },
+        attributes: [
+          'status',
+          [models.Sequelize.fn('COUNT', models.Sequelize.col('status')), 'count']
+        ],
+        group: ['status'],
+        raw: true
+      });
+
+      return {
+        success: true,
+        stats: {
+          total: totalCount,
+          unread: unreadCount,
+          delivered: deliveredCount,
+          recent: recentCount,
+          readRate: totalCount > 0 ? ((totalCount - unreadCount) / totalCount * 100).toFixed(1) : '0.0',
+          categoryCounts: {
+            activity: activityCount,
+            contracts: contractCount,
+            reminders: reminderCount
+          },
+          eventCounts: eventCounts.reduce((acc, item) => {
+            acc[item.eventId] = parseInt(item.count);
+            return acc;
+          }, {}),
+          platformCounts: platformCounts.reduce((acc, item) => {
+            acc[item.platform || 'unknown'] = parseInt(item.count);
+            return acc;
+          }, {}),
+          statusCounts: statusCounts.reduce((acc, item) => {
+            acc[item.status] = parseInt(item.count);
+            return acc;
+          }, {})
+        }
+      };
+    } catch (error) {
+      logger.error('Failed to get detailed notification stats', {
+        userId,
+        error: error.message,
+        stack: error.stack
+      });
+      throw error;
+    }
+  }
+  
+
   /**
    * Shutdown notification service
    */
@@ -781,5 +1095,6 @@ class NotificationService {
     this.initialized = false;
   }
 }
+
 
 module.exports = new NotificationService();
