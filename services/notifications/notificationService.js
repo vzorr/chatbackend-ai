@@ -280,20 +280,9 @@ class NotificationService {
   }
 
   /**
-   * Mark notification as read
+   * Get all notifications with filters
    */
-  async markAsRead(logId) {
-    await this.ensureDbInitialized();
-    const models = db.getModels();
-    
-    await models.NotificationLog.update(
-      { readAt: new Date() },
-      { where: { id: logId } }
-    );
-  }
-
-
-    async getAllNotifications(options = {}) {
+  async getAllNotifications(options = {}) {
     await this.ensureDbInitialized();
     const models = db.getModels();
     
@@ -314,7 +303,7 @@ class NotificationService {
     }
     
     if (filters.read !== undefined) {
-      where.readAt = filters.read ? null : { [models.Sequelize.Op.not]: null };
+      where.readAt = filters.read ? { [models.Sequelize.Op.not]: null } : null;
     }
     
     return await models.NotificationLog.findAndCountAll({
@@ -324,12 +313,6 @@ class NotificationService {
       order: [['createdAt', 'DESC']]
     });
   }
-
-  //****************************************** */
-
-
-  // Add these methods to your existing services/notifications/notificationService.js class
-// Insert them inside the NotificationService class, before the shutdown method
 
   /**
    * Mark notification as read by notification ID and user ID
@@ -403,7 +386,7 @@ class NotificationService {
       where.readAt = null;
     }
     
-    return await models.NotificationLog.findAndCountAll({
+    const result = await models.NotificationLog.findAndCountAll({
       where,
       limit,
       offset,
@@ -413,6 +396,13 @@ class NotificationService {
         'channel', 'platform', 'sentAt', 'deliveredAt', 'readAt', 'createdAt'
       ]
     });
+
+    return {
+      success: true,
+      notifications: result.rows,
+      total: result.count,
+      hasMore: (offset + limit) < result.count
+    };
   }
 
   /**
@@ -447,7 +437,7 @@ class NotificationService {
       }
     });
 
-    return categorizedCounts;
+    return { counts: categorizedCounts };
   }
 
   /**
@@ -512,12 +502,36 @@ class NotificationService {
     });
 
     return {
-      total: totalCount,
-      unread: unreadCount,
-      delivered: deliveredCount,
-      recent: recentCount,
-      readRate: totalCount > 0 ? ((totalCount - unreadCount) / totalCount * 100).toFixed(1) : 0
+      stats: {
+        total: totalCount,
+        unread: unreadCount,
+        delivered: deliveredCount,
+        recent: recentCount,
+        readRate: totalCount > 0 ? ((totalCount - unreadCount) / totalCount * 100).toFixed(1) : '0.0'
+      }
     };
+  }
+
+  /**
+   * Get notifications for a user
+   */
+  async getUserNotifications(userId, options = {}) {
+    await this.ensureDbInitialized();
+    const models = db.getModels();
+    
+    const { limit = 20, offset = 0, unreadOnly = false } = options;
+    
+    const where = { userId };
+    if (unreadOnly) {
+      where.readAt = null;
+    }
+    
+    return await models.NotificationLog.findAndCountAll({
+      where,
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']]
+    });
   }
 
   /**
@@ -601,29 +615,6 @@ class NotificationService {
     };
     
     return eventMap[category] || [];
-  }
-  
-
-  /**
-   * Get notifications for a user
-   */
-  async getUserNotifications(userId, options = {}) {
-    await this.ensureDbInitialized();
-    const models = db.getModels();
-    
-    const { limit = 20, offset = 0, unreadOnly = false } = options;
-    
-    const where = { userId };
-    if (unreadOnly) {
-      where.readAt = null;
-    }
-    
-    return await models.NotificationLog.findAndCountAll({
-      where,
-      limit,
-      offset,
-      order: [['createdAt', 'DESC']]
-    });
   }
 
   /**
