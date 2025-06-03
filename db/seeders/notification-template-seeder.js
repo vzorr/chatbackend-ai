@@ -144,14 +144,15 @@ const notificationTemplates = [
 async function seedNotificationTemplates() {
   try {
     console.log('🔧 Initializing database connection...');
-    await initializeDatabase(); // ✅ Proper app-style database initialization
+    await initializeDatabase(); // 1️⃣ DB connection
+    await db.initializeModels(); // 2️⃣ Load Sequelize models after DB connection
 
-    const { NotificationTemplate } = db.getModels();
+    const { NotificationTemplate } = db.getModels(); // 3️⃣ Now models will be ready!
 
     console.log('🧹 Deleting all existing notification templates...');
     await NotificationTemplate.destroy({ where: {}, truncate: true });
 
-    console.log('🚀 Seeding Notification Templates...');
+    console.log('🚀 Seeding templates...');
     for (const template of notificationTemplates) {
       const [record, created] = await NotificationTemplate.findOrCreate({
         where: {
