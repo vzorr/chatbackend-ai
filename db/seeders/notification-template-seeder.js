@@ -1,5 +1,5 @@
 'use strict';
-
+require('dotenv').config(); // ✅ load .env for standalone script
 // ✅ Load environment variables manually
 require('dotenv').config();
 
