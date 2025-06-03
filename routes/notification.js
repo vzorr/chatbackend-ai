@@ -1,4 +1,4 @@
-// routes/notification.js - COMPLETE FIXED VERSION
+// routes/notification.js - COMPLETE UPDATED VERSION
 const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
@@ -714,7 +714,6 @@ router.get('/unread/count',
     try {
       const result = await notificationService.getUnreadCounts(userId);
       
-      // The service method returns { counts: { ... } }
       res.json({
         success: true,
         counts: result.counts || {}
@@ -743,7 +742,6 @@ router.get('/stats',
     try {
       const result = await notificationService.getNotificationStats(userId);
       
-      // The service method returns { stats: { ... } }
       res.json({
         success: true,
         stats: result.stats || {}
@@ -797,17 +795,14 @@ router.get('/by-category/:category',
       
       const result = await notificationService.getNotificationsByCategory(userId, category, options);
       
-      // The service method returns { success: true, notifications: [...], total: X, hasMore: boolean }
-      const { notifications, total, hasMore } = result;
-      
       res.json({
         success: true,
-        notifications: notifications || [],
-        total: total || 0,
+        notifications: result.notifications || [],
+        total: result.total || 0,
         category,
         limit: parsedLimit,
         offset: parsedOffset,
-        hasMore: hasMore || false
+        hasMore: result.hasMore || false
       });
     } catch (error) {
       logger.error('Failed to retrieve notifications by category', {
@@ -1078,12 +1073,13 @@ router.post('/read-all',
   })
 );
 
-// Add these debug routes to your existing notification.js file
-// Insert them before the final module.exports = router;
+// =============================================================================
+// DEBUG ROUTES - Clean implementation using service methods
+// =============================================================================
 
 /**
  * @route POST /api/v1/notifications/debug/create-test-data
- * @desc Create test notification data for debugging with various categories and events
+ * @desc Create test notification data using service method
  * @access Private
  */
 router.post('/debug/create-test-data', 
@@ -1093,370 +1089,36 @@ router.post('/debug/create-test-data',
     const { count = 10, categories = ['activity', 'contracts', 'reminders'] } = req.body;
     
     try {
-      await notificationService.ensureDbInitialized();
-      const models = db.getModels ? db.getModels() : db;
-      const { NotificationLog } = models;
+      // Generate realistic test notification data
+      const testNotifications = generateTestNotificationData(userId, count, categories);
       
-      if (!NotificationLog) {
-        throw createSystemError('NotificationLog model not found');
-      }
+      // Use the existing service method
+      const result = await notificationService.createBulkNotifications(userId, testNotifications);
       
-      // Define realistic notification events with their data
-      const notificationEvents = {
-        activity: [
-          {
-            eventId: 'job_application_received',
-            title: 'New Application for {{jobTitle}}',
-            body: '{{applicantName}} has applied for your job posting',
-            payload: {
-              jobId: 'job-{{randomId}}',
-              applicantId: 'user-{{randomId}}',
-              applicantName: '{{applicantName}}',
-              jobTitle: '{{jobTitle}}',
-              action: 'view_application',
-              screen: 'ApplicationDetails'
-            }
-          },
-          {
-            eventId: 'application_accepted',
-            title: 'Application Accepted! 🎉',
-            body: 'Your application for {{jobTitle}} has been accepted',
-            payload: {
-              jobId: 'job-{{randomId}}',
-              clientName: '{{clientName}}',
-              jobTitle: '{{jobTitle}}',
-              action: 'view_job',
-              screen: 'JobDetails'
-            }
-          },
-          {
-            eventId: 'application_rejected',
-            title: 'Application Update',
-            body: 'Your application for {{jobTitle}} was not selected this time',
-            payload: {
-              jobId: 'job-{{randomId}}',
-              jobTitle: '{{jobTitle}}',
-              action: 'view_feedback',
-              screen: 'ApplicationFeedback'
-            }
-          },
-          {
-            eventId: 'job_completed',
-            title: 'Job Completed Successfully',
-            body: 'Congratulations! You completed {{jobTitle}}',
-            payload: {
-              jobId: 'job-{{randomId}}',
-              jobTitle: '{{jobTitle}}',
-              earnedAmount: '{{amount}}',
-              action: 'leave_review',
-              screen: 'ReviewClient'
-            }
-          },
-          {
-            eventId: 'new_review',
-            title: 'New Review Received ⭐',
-            body: '{{clientName}} left you a {{rating}}-star review',
-            payload: {
-              reviewId: 'review-{{randomId}}',
-              clientName: '{{clientName}}',
-              rating: '{{rating}}',
-              action: 'view_review',
-              screen: 'ReviewDetails'
-            }
-          },
-          {
-            eventId: 'milestone_completed',
-            title: 'Milestone Achieved',
-            body: 'Milestone "{{milestoneName}}" completed for {{jobTitle}}',
-            payload: {
-              jobId: 'job-{{randomId}}',
-              milestoneId: 'milestone-{{randomId}}',
-              milestoneName: '{{milestoneName}}',
-              jobTitle: '{{jobTitle}}',
-              action: 'view_milestone',
-              screen: 'MilestoneDetails'
-            }
-          }
-        ],
-        contracts: [
-          {
-            eventId: 'contract_signed',
-            title: 'Contract Signed 📝',
-            body: 'Contract for {{projectTitle}} has been signed',
-            payload: {
-              contractId: 'contract-{{randomId}}',
-              projectTitle: '{{projectTitle}}',
-              clientName: '{{clientName}}',
-              amount: '{{amount}}',
-              action: 'view_contract',
-              screen: 'ContractDetails'
-            }
-          },
-          {
-            eventId: 'payment_received',
-            title: 'Payment Received 💰',
-            body: 'You received {{amount}} for {{projectTitle}}',
-            payload: {
-              paymentId: 'payment-{{randomId}}',
-              amount: '{{amount}}',
-              projectTitle: '{{projectTitle}}',
-              contractId: 'contract-{{randomId}}',
-              action: 'view_payment',
-              screen: 'PaymentDetails'
-            }
-          },
-          {
-            eventId: 'payment_released',
-            title: 'Payment Released',
-            body: 'Payment of {{amount}} has been released for {{projectTitle}}',
-            payload: {
-              paymentId: 'payment-{{randomId}}',
-              amount: '{{amount}}',
-              projectTitle: '{{projectTitle}}',
-              action: 'view_wallet',
-              screen: 'Wallet'
-            }
-          },
-          {
-            eventId: 'milestone_payment',
-            title: 'Milestone Payment',
-            body: 'Payment of {{amount}} for milestone "{{milestoneName}}"',
-            payload: {
-              paymentId: 'payment-{{randomId}}',
-              milestoneId: 'milestone-{{randomId}}',
-              milestoneName: '{{milestoneName}}',
-              amount: '{{amount}}',
-              action: 'view_milestone_payment',
-              screen: 'MilestonePayment'
-            }
-          },
-          {
-            eventId: 'contract_updated',
-            title: 'Contract Updated',
-            body: 'Contract for {{projectTitle}} has been updated',
-            payload: {
-              contractId: 'contract-{{randomId}}',
-              projectTitle: '{{projectTitle}}',
-              updateType: '{{updateType}}',
-              action: 'review_changes',
-              screen: 'ContractChanges'
-            }
-          }
-        ],
-        reminders: [
-          {
-            eventId: 'payment_due',
-            title: 'Payment Due Reminder 📅',
-            body: 'Payment of {{amount}} is due on {{dueDate}}',
-            payload: {
-              invoiceId: 'invoice-{{randomId}}',
-              amount: '{{amount}}',
-              dueDate: '{{dueDate}}',
-              action: 'pay_invoice',
-              screen: 'PaymentScreen'
-            }
-          },
-          {
-            eventId: 'deadline_approaching',
-            title: 'Deadline Approaching ⏰',
-            body: 'Project {{projectTitle}} deadline is in {{daysLeft}} days',
-            payload: {
-              projectId: 'project-{{randomId}}',
-              projectTitle: '{{projectTitle}}',
-              daysLeft: '{{daysLeft}}',
-              deadline: '{{deadline}}',
-              action: 'view_project',
-              screen: 'ProjectDetails'
-            }
-          },
-          {
-            eventId: 'profile_incomplete',
-            title: 'Complete Your Profile',
-            body: 'Complete your profile to increase your chances of getting hired',
-            payload: {
-              completionPercentage: '{{completionPercentage}}',
-              missingFields: '{{missingFields}}',
-              action: 'complete_profile',
-              screen: 'ProfileEdit'
-            }
-          },
-          {
-            eventId: 'verification_required',
-            title: 'Verification Required 🔐',
-            body: 'Please verify your {{verificationType}} to continue',
-            payload: {
-              verificationType: '{{verificationType}}',
-              action: 'verify_account',
-              screen: 'Verification'
-            }
-          },
-          {
-            eventId: 'payment_overdue',
-            title: 'Payment Overdue ⚠️',
-            body: 'Payment of {{amount}} is {{daysOverdue}} days overdue',
-            payload: {
-              invoiceId: 'invoice-{{randomId}}',
-              amount: '{{amount}}',
-              daysOverdue: '{{daysOverdue}}',
-              action: 'pay_overdue',
-              screen: 'OverduePayment'
-            }
-          }
-        ]
-      };
+      // Get summary using existing service method
+      const stats = await notificationService.getDetailedNotificationStats(userId);
       
-      // Sample data for template replacement
-      const sampleData = {
-        applicantNames: ['John Smith', 'Sarah Johnson', 'Mike Chen', 'Emma Davis', 'Alex Rodriguez'],
-        clientNames: ['TechCorp Inc', 'StartupXYZ', 'Design Studio', 'Digital Agency', 'E-commerce Co'],
-        jobTitles: ['React Developer', 'UI/UX Designer', 'Content Writer', 'Mobile App Developer', 'Digital Marketer'],
-        projectTitles: ['E-commerce Website', 'Mobile App Design', 'Brand Identity', 'Web Application', 'Marketing Campaign'],
-        milestoneNames: ['Initial Design', 'Frontend Development', 'Backend Integration', 'Testing Phase', 'Final Delivery'],
-        amounts: ['$500', '$1,200', '$800', '$2,000', '$1,500'],
-        ratings: ['5', '4', '5', '4', '5'],
-        verificationTypes: ['email address', 'phone number', 'identity document'],
-        updateTypes: ['scope change', 'timeline update', 'payment terms'],
-        missingFields: ['skills', 'portfolio', 'bio']
-      };
-      
-      // Create test notifications
-      const testNotifications = [];
-      const now = new Date();
-      
-      for (let i = 0; i < count; i++) {
-        // Select category (cycle through or use provided categories)
-        const categoryIndex = i % categories.length;
-        const category = categories[categoryIndex];
-        const events = notificationEvents[category];
-        const eventTemplate = events[i % events.length];
-        
-        // Generate random data
-        const randomId = Math.random().toString(36).substr(2, 9);
-        const applicantName = sampleData.applicantNames[Math.floor(Math.random() * sampleData.applicantNames.length)];
-        const clientName = sampleData.clientNames[Math.floor(Math.random() * sampleData.clientNames.length)];
-        const jobTitle = sampleData.jobTitles[Math.floor(Math.random() * sampleData.jobTitles.length)];
-        const projectTitle = sampleData.projectTitles[Math.floor(Math.random() * sampleData.projectTitles.length)];
-        const milestoneName = sampleData.milestoneNames[Math.floor(Math.random() * sampleData.milestoneNames.length)];
-        const amount = sampleData.amounts[Math.floor(Math.random() * sampleData.amounts.length)];
-        const rating = sampleData.ratings[Math.floor(Math.random() * sampleData.ratings.length)];
-        const verificationType = sampleData.verificationTypes[Math.floor(Math.random() * sampleData.verificationTypes.length)];
-        const updateType = sampleData.updateTypes[Math.floor(Math.random() * sampleData.updateTypes.length)];
-        const missingFields = sampleData.missingFields[Math.floor(Math.random() * sampleData.missingFields.length)];
-        
-        // Calculate dates
-        const createdAt = new Date(now.getTime() - (i * 3600000) - Math.random() * 7 * 24 * 3600000); // Random within last week
-        const dueDate = new Date(now.getTime() + Math.random() * 30 * 24 * 3600000); // Random within next month
-        const deadline = new Date(now.getTime() + Math.random() * 14 * 24 * 3600000); // Random within next 2 weeks
-        const daysLeft = Math.ceil((deadline - now) / (24 * 3600000));
-        const daysOverdue = Math.ceil(Math.random() * 10) + 1;
-        const completionPercentage = Math.floor(Math.random() * 40) + 40; // 40-80%
-        
-        // Replace template variables
-        const templateData = {
-          randomId,
-          applicantName,
-          clientName,
-          jobTitle,
-          projectTitle,
-          milestoneName,
-          amount,
-          rating,
-          verificationType,
-          updateType,
-          missingFields,
-          dueDate: dueDate.toLocaleDateString(),
-          deadline: deadline.toLocaleDateString(),
-          daysLeft: daysLeft.toString(),
-          daysOverdue: daysOverdue.toString(),
-          completionPercentage: completionPercentage.toString()
-        };
-        
-        // Compile title and body
-        let compiledTitle = eventTemplate.title;
-        let compiledBody = eventTemplate.body;
-        let compiledPayload = JSON.parse(JSON.stringify(eventTemplate.payload));
-        
-        // Replace variables in title, body, and payload
-        Object.entries(templateData).forEach(([key, value]) => {
-          const regex = new RegExp(`{{${key}}}`, 'g');
-          compiledTitle = compiledTitle.replace(regex, value);
-          compiledBody = compiledBody.replace(regex, value);
-          compiledPayload = JSON.parse(JSON.stringify(compiledPayload).replace(regex, value));
-        });
-        
-        // Determine if notification should be read (30% chance)
-        const isRead = Math.random() < 0.3;
-        
-        const notification = {
-          id: uuidv4(),
-          userId,
-          eventId: eventTemplate.eventId,
-          appId: 'freelance-app',
-          title: compiledTitle,
-          body: compiledBody,
-          payload: compiledPayload,
-          status: 'delivered',
-          channel: 'push',
-          platform: 'mobile',
-          createdAt,
-          sentAt: createdAt,
-          deliveredAt: new Date(createdAt.getTime() + 1000), // 1 second after creation
-          readAt: isRead ? new Date(createdAt.getTime() + Math.random() * 24 * 3600000) : null // Random read time within 24h
-        };
-        
-        testNotifications.push(notification);
-      }
-      
-      // Insert notifications into database
-      await NotificationLog.bulkCreate(testNotifications);
-      
-      // Calculate summary statistics
-      const summary = {
-        total: testNotifications.length,
-        byCategory: {},
-        byEventId: {},
-        readCount: testNotifications.filter(n => n.readAt).length,
-        unreadCount: testNotifications.filter(n => !n.readAt).length
-      };
-      
-      // Group by category
-      categories.forEach(category => {
-        const categoryEvents = notificationEvents[category].map(e => e.eventId);
-        const categoryNotifications = testNotifications.filter(n => categoryEvents.includes(n.eventId));
-        summary.byCategory[category] = {
-          total: categoryNotifications.length,
-          read: categoryNotifications.filter(n => n.readAt).length,
-          unread: categoryNotifications.filter(n => !n.readAt).length
-        };
-      });
-      
-      // Group by event ID
-      testNotifications.forEach(n => {
-        if (!summary.byEventId[n.eventId]) {
-          summary.byEventId[n.eventId] = 0;
-        }
-        summary.byEventId[n.eventId]++;
-      });
-      
-      logger.info('Test notification data created', {
+      logger.info('Test notification data created via service', {
         userId,
-        count: testNotifications.length,
-        categories,
-        summary
+        count: result.length,
+        categories
       });
       
       res.json({
         success: true,
-        message: `Created ${testNotifications.length} test notifications`,
-        summary,
-        notifications: testNotifications.map(n => ({
+        message: `Created ${result.length} test notifications`,
+        summary: {
+          total: result.length,
+          categories,
+          stats: stats.stats
+        },
+        notifications: result.slice(0, 10).map(n => ({
           id: n.id,
           eventId: n.eventId,
           title: n.title,
-          read: !!n.readAt,
           category: notificationService.getCategoryFromEventId(n.eventId),
           createdAt: n.createdAt
-        })).slice(0, 10) // Return first 10 for preview
+        }))
       });
     } catch (error) {
       logger.error('Failed to create test notification data', {
@@ -1472,92 +1134,22 @@ router.post('/debug/create-test-data',
 
 /**
  * @route GET /api/v1/notifications/debug/raw-data
- * @desc Get raw notification data for debugging
+ * @desc Get raw notification data using service method
  * @access Private
  */
 router.get('/debug/raw-data', 
   authenticate, 
   asyncHandler(async (req, res) => {
     const userId = req.user.id;
+    const { limit = 50 } = req.query;
     
     try {
-      await notificationService.ensureDbInitialized();
-      const models = db.getModels ? db.getModels() : db;
-      const { NotificationLog } = models;
-      
-      if (!NotificationLog) {
-        throw createSystemError('NotificationLog model not found');
-      }
-      
-      // Get raw data from database
-      const rawNotifications = await NotificationLog.findAll({
-        where: { userId },
-        order: [['createdAt', 'DESC']],
-        limit: 50,
-        raw: true
-      });
-      
-      // Get counts by category using the service helper methods
-      const activityEvents = notificationService.getEventIdsByCategory('activity');
-      const contractEvents = notificationService.getEventIdsByCategory('contracts');
-      const reminderEvents = notificationService.getEventIdsByCategory('reminders');
-      
-      const activityCount = await NotificationLog.count({
-        where: { userId, eventId: activityEvents }
-      });
-      
-      const contractCount = await NotificationLog.count({
-        where: { userId, eventId: contractEvents }
-      });
-      
-      const reminderCount = await NotificationLog.count({
-        where: { userId, eventId: reminderEvents }
-      });
-      
-      const unreadCount = await NotificationLog.count({
-        where: { userId, readAt: null }
-      });
-      
-      const totalCount = await NotificationLog.count({
-        where: { userId }
-      });
-      
-      // Group notifications by event type
-      const eventCounts = {};
-      rawNotifications.forEach(notification => {
-        eventCounts[notification.eventId] = (eventCounts[notification.eventId] || 0) + 1;
-      });
+      // Use existing service method
+      const result = await notificationService.getRawNotificationData(userId, parseInt(limit));
       
       res.json({
         success: true,
-        debug: {
-          userId,
-          totalNotifications: totalCount,
-          unreadCount,
-          categoryCounts: {
-            activity: activityCount,
-            contracts: contractCount,
-            reminders: reminderCount
-          },
-          eventCounts,
-          rawNotifications: rawNotifications.slice(0, 10), // First 10 for inspection
-          sampleTransformed: rawNotifications.slice(0, 3).map(n => ({
-            id: n.id,
-            title: n.title,
-            body: n.body,
-            eventId: n.eventId,
-            category: notificationService.getCategoryFromEventId(n.eventId),
-            read: !!n.readAt,
-            createdAt: n.createdAt,
-            payload: n.payload
-          })),
-          databaseStructure: {
-            tableExists: true,
-            hasData: totalCount > 0,
-            oldestNotification: rawNotifications.length > 0 ? rawNotifications[rawNotifications.length - 1].createdAt : null,
-            newestNotification: rawNotifications.length > 0 ? rawNotifications[0].createdAt : null
-          }
-        }
+        ...result.debug
       });
     } catch (error) {
       logger.error('Failed to get raw notification data', {
@@ -1573,7 +1165,7 @@ router.get('/debug/raw-data',
 
 /**
  * @route DELETE /api/v1/notifications/debug/clear-data
- * @desc Clear test notification data
+ * @desc Clear test notification data using service method
  * @access Private
  */
 router.delete('/debug/clear-data', 
@@ -1583,35 +1175,20 @@ router.delete('/debug/clear-data',
     const { appId = 'freelance-app' } = req.query;
     
     try {
-      await notificationService.ensureDbInitialized();
-      const models = db.getModels ? db.getModels() : db;
-      const { NotificationLog } = models;
+      // Use existing service method
+      const result = await notificationService.clearUserNotifications(userId, appId);
       
-      if (!NotificationLog) {
-        throw createSystemError('NotificationLog model not found');
-      }
-      
-      // Count before deletion
-      const beforeCount = await NotificationLog.count({
-        where: { userId, appId }
-      });
-      
-      // Delete all notifications for this user and app
-      const deleted = await NotificationLog.destroy({
-        where: { userId, appId }
-      });
-      
-      logger.info('Test notification data cleared', {
+      logger.info('Test notification data cleared via service', {
         userId,
         appId,
-        deletedCount: deleted
+        deletedCount: result.deletedCount
       });
       
       res.json({
         success: true,
-        message: `Cleared ${deleted} test notifications`,
-        beforeCount,
-        deletedCount: deleted
+        message: `Cleared ${result.deletedCount} notifications`,
+        beforeCount: result.beforeCount,
+        deletedCount: result.deletedCount
       });
     } catch (error) {
       logger.error('Failed to clear test notification data', {
@@ -1626,6 +1203,37 @@ router.delete('/debug/clear-data',
 );
 
 /**
+ * @route GET /api/v1/notifications/debug/detailed-stats
+ * @desc Get detailed notification statistics using service method
+ * @access Private
+ */
+router.get('/debug/detailed-stats', 
+  authenticate, 
+  asyncHandler(async (req, res) => {
+    const userId = req.user.id;
+    
+    try {
+      // Use existing service method
+      const result = await notificationService.getDetailedNotificationStats(userId);
+      
+      res.json({
+        success: true,
+        userId,
+        ...result
+      });
+    } catch (error) {
+      logger.error('Failed to get detailed notification stats', {
+        userId,
+        error: error.message,
+        stack: error.stack
+      });
+      
+      throw createSystemError('Failed to get detailed notification stats', error);
+    }
+  })
+);
+
+/**
  * @route GET /api/v1/notifications/debug/event-types
  * @desc Get all available notification event types and categories
  * @access Private
@@ -1634,36 +1242,23 @@ router.get('/debug/event-types',
   authenticate, 
   asyncHandler(async (req, res) => {
     try {
-      const eventsByCategory = {
-        activity: [
-          { eventId: 'job_application_received', description: 'When someone applies for a job' },
-          { eventId: 'application_accepted', description: 'When an application is accepted' },
-          { eventId: 'application_rejected', description: 'When an application is rejected' },
-          { eventId: 'job_completed', description: 'When a job is completed successfully' },
-          { eventId: 'new_review', description: 'When a new review is received' },
-          { eventId: 'milestone_completed', description: 'When a project milestone is completed' }
-        ],
-        contracts: [
-          { eventId: 'contract_signed', description: 'When a contract is signed' },
-          { eventId: 'payment_received', description: 'When payment is received' },
-          { eventId: 'payment_released', description: 'When payment is released from escrow' },
-          { eventId: 'milestone_payment', description: 'When milestone payment is made' },
-          { eventId: 'contract_updated', description: 'When contract terms are updated' }
-        ],
-        reminders: [
-          { eventId: 'payment_due', description: 'Payment due date reminder' },
-          { eventId: 'deadline_approaching', description: 'Project deadline approaching' },
-          { eventId: 'profile_incomplete', description: 'Profile completion reminder' },
-          { eventId: 'verification_required', description: 'Account verification required' },
-          { eventId: 'payment_overdue', description: 'Payment overdue notice' }
-        ]
-      };
+      // Use service method to get categories
+      const categories = ['activity', 'contracts', 'reminders'];
+      const eventsByCategory = {};
+      
+      categories.forEach(category => {
+        const events = notificationService.getEventIdsByCategory(category);
+        eventsByCategory[category] = events.map(eventId => ({
+          eventId,
+          description: getEventDescription(eventId)
+        }));
+      });
       
       res.json({
         success: true,
         eventTypes: eventsByCategory,
         totalEventTypes: Object.values(eventsByCategory).flat().length,
-        categories: Object.keys(eventsByCategory)
+        categories
       });
     } catch (error) {
       logger.error('Failed to get event types', {
@@ -1676,7 +1271,270 @@ router.get('/debug/event-types',
   })
 );
 
-// Add cache-control headers to prevent 304 responses during debugging
+// =============================================================================
+// HELPER FUNCTIONS
+// =============================================================================
+
+// Helper function to generate test notification data
+function generateTestNotificationData(userId, count, categories) {
+  const notificationTemplates = {
+    activity: [
+      {
+        eventId: 'job_application_received',
+        title: 'New Application for {{jobTitle}}',
+        body: '{{applicantName}} has applied for your job posting',
+        payload: {
+          jobId: 'job-{{randomId}}',
+          applicantId: 'user-{{randomId}}',
+          applicantName: '{{applicantName}}',
+          jobTitle: '{{jobTitle}}',
+          action: 'view_application',
+          screen: 'ApplicationDetails'
+        }
+      },
+      {
+        eventId: 'application_accepted',
+        title: 'Application Accepted! 🎉',
+        body: 'Your application for {{jobTitle}} has been accepted',
+        payload: {
+          jobId: 'job-{{randomId}}',
+          clientName: '{{clientName}}',
+          jobTitle: '{{jobTitle}}',
+          action: 'view_job',
+          screen: 'JobDetails'
+        }
+      },
+      {
+        eventId: 'job_completed',
+        title: 'Job Completed Successfully',
+        body: 'Congratulations! You completed {{jobTitle}}',
+        payload: {
+          jobId: 'job-{{randomId}}',
+          jobTitle: '{{jobTitle}}',
+          earnedAmount: '{{amount}}',
+          action: 'leave_review',
+          screen: 'ReviewClient'
+        }
+      },
+      {
+        eventId: 'new_review',
+        title: 'New Review Received ⭐',
+        body: '{{clientName}} left you a {{rating}}-star review',
+        payload: {
+          reviewId: 'review-{{randomId}}',
+          clientName: '{{clientName}}',
+          rating: '{{rating}}',
+          action: 'view_review',
+          screen: 'ReviewDetails'
+        }
+      }
+    ],
+    contracts: [
+      {
+        eventId: 'contract_signed',
+        title: 'Contract Signed 📝',
+        body: 'Contract for {{projectTitle}} has been signed',
+        payload: {
+          contractId: 'contract-{{randomId}}',
+          projectTitle: '{{projectTitle}}',
+          clientName: '{{clientName}}',
+          amount: '{{amount}}',
+          action: 'view_contract',
+          screen: 'ContractDetails'
+        }
+      },
+      {
+        eventId: 'payment_received',
+        title: 'Payment Received 💰',
+        body: 'You received {{amount}} for {{projectTitle}}',
+        payload: {
+          paymentId: 'payment-{{randomId}}',
+          amount: '{{amount}}',
+          projectTitle: '{{projectTitle}}',
+          contractId: 'contract-{{randomId}}',
+          action: 'view_payment',
+          screen: 'PaymentDetails'
+        }
+      },
+      {
+        eventId: 'payment_released',
+        title: 'Payment Released',
+        body: 'Payment of {{amount}} has been released for {{projectTitle}}',
+        payload: {
+          paymentId: 'payment-{{randomId}}',
+          amount: '{{amount}}',
+          projectTitle: '{{projectTitle}}',
+          action: 'view_wallet',
+          screen: 'Wallet'
+        }
+      }
+    ],
+    reminders: [
+      {
+        eventId: 'payment_due',
+        title: 'Payment Due Reminder 📅',
+        body: 'Payment of {{amount}} is due on {{dueDate}}',
+        payload: {
+          invoiceId: 'invoice-{{randomId}}',
+          amount: '{{amount}}',
+          dueDate: '{{dueDate}}',
+          action: 'pay_invoice',
+          screen: 'PaymentScreen'
+        }
+      },
+      {
+        eventId: 'deadline_approaching',
+        title: 'Deadline Approaching ⏰',
+        body: 'Project {{projectTitle}} deadline is in {{daysLeft}} days',
+        payload: {
+          projectId: 'project-{{randomId}}',
+          projectTitle: '{{projectTitle}}',
+          daysLeft: '{{daysLeft}}',
+          deadline: '{{deadline}}',
+          action: 'view_project',
+          screen: 'ProjectDetails'
+        }
+      },
+      {
+        eventId: 'verification_required',
+        title: 'Verification Required 🔐',
+        body: 'Please verify your {{verificationType}} to continue',
+        payload: {
+          verificationType: '{{verificationType}}',
+          action: 'verify_account',
+          screen: 'Verification'
+        }
+      }
+    ]
+  };
+
+  const sampleData = {
+    applicantNames: ['John Smith', 'Sarah Johnson', 'Mike Chen', 'Emma Davis', 'Alex Rodriguez'],
+    clientNames: ['TechCorp Inc', 'StartupXYZ', 'Design Studio', 'Digital Agency', 'E-commerce Co'],
+    jobTitles: ['React Developer', 'UI/UX Designer', 'Content Writer', 'Mobile App Developer', 'Digital Marketer'],
+    projectTitles: ['E-commerce Website', 'Mobile App Design', 'Brand Identity', 'Web Application', 'Marketing Campaign'],
+    amounts: ['$500', '$1,200', '$800', '$2,000', '$1,500'],
+    ratings: ['5', '4', '5', '4', '5'],
+    verificationTypes: ['email address', 'phone number', 'identity document']
+  };
+
+  const testNotifications = [];
+  const now = new Date();
+
+  for (let i = 0; i < count; i++) {
+    // Select category (cycle through provided categories)
+    const categoryIndex = i % categories.length;
+    const category = categories[categoryIndex];
+    const templates = notificationTemplates[category];
+    const template = templates[i % templates.length];
+
+    // Generate random data
+    const randomId = Math.random().toString(36).substr(2, 9);
+    const applicantName = sampleData.applicantNames[Math.floor(Math.random() * sampleData.applicantNames.length)];
+    const clientName = sampleData.clientNames[Math.floor(Math.random() * sampleData.clientNames.length)];
+    const jobTitle = sampleData.jobTitles[Math.floor(Math.random() * sampleData.jobTitles.length)];
+    const projectTitle = sampleData.projectTitles[Math.floor(Math.random() * sampleData.projectTitles.length)];
+    const amount = sampleData.amounts[Math.floor(Math.random() * sampleData.amounts.length)];
+    const rating = sampleData.ratings[Math.floor(Math.random() * sampleData.ratings.length)];
+    const verificationType = sampleData.verificationTypes[Math.floor(Math.random() * sampleData.verificationTypes.length)];
+
+    // Calculate dates
+    const createdAt = new Date(now.getTime() - (i * 3600000) - Math.random() * 7 * 24 * 3600000);
+    const dueDate = new Date(now.getTime() + Math.random() * 30 * 24 * 3600000);
+    const deadline = new Date(now.getTime() + Math.random() * 14 * 24 * 3600000);
+    const daysLeft = Math.ceil((deadline - now) / (24 * 3600000));
+
+    // Template data for replacement
+    const templateData = {
+      randomId,
+      applicantName,
+      clientName,
+      jobTitle,
+      projectTitle,
+      amount,
+      rating,
+      verificationType,
+      dueDate: dueDate.toLocaleDateString(),
+      deadline: deadline.toLocaleDateString(),
+      daysLeft: daysLeft.toString()
+    };
+
+    // Compile title and body
+    let compiledTitle = template.title;
+    let compiledBody = template.body;
+    let compiledPayload = JSON.parse(JSON.stringify(template.payload));
+
+    // Replace variables
+    Object.entries(templateData).forEach(([key, value]) => {
+      const regex = new RegExp(`{{${key}}}`, 'g');
+      compiledTitle = compiledTitle.replace(regex, value);
+      compiledBody = compiledBody.replace(regex, value);
+      compiledPayload = JSON.parse(JSON.stringify(compiledPayload).replace(regex, value));
+    });
+
+    // Determine if notification should be read (30% chance)
+    const isRead = Math.random() < 0.3;
+
+    const notification = {
+      id: uuidv4(),
+      eventId: template.eventId,
+      appId: 'freelance-app',
+      title: compiledTitle,
+      body: compiledBody,
+      payload: compiledPayload,
+      status: 'delivered',
+      channel: 'push',
+      platform: 'mobile',
+      createdAt,
+      sentAt: createdAt,
+      deliveredAt: new Date(createdAt.getTime() + 1000),
+      readAt: isRead ? new Date(createdAt.getTime() + Math.random() * 24 * 3600000) : null
+    };
+
+    testNotifications.push(notification);
+  }
+
+  return testNotifications;
+}
+
+// Helper function to get event descriptions
+function getEventDescription(eventId) {
+  const descriptions = {
+    // Activity events
+    'job_application_received': 'When someone applies for a job',
+    'job_application_sent': 'When user sends a job application',
+    'job_completed': 'When a job is completed successfully',
+    'milestone_completed': 'When a project milestone is completed',
+    'new_review': 'When a new review is received',
+    'profile_verified': 'When profile verification is completed',
+    'job_posted': 'When a new job is posted',
+    'application_accepted': 'When an application is accepted',
+    'application_rejected': 'When an application is rejected',
+    'new_application_received': 'When a new application is received',
+    
+    // Contract events
+    'contract_signed': 'When a contract is signed',
+    'contract_updated': 'When contract terms are updated',
+    'contract_cancelled': 'When a contract is cancelled',
+    'payment_received': 'When payment is received',
+    'payment_processed': 'When payment is processed',
+    'payment_released': 'When payment is released from escrow',
+    'milestone_payment': 'When milestone payment is made',
+    'invoice_generated': 'When an invoice is generated',
+    
+    // Reminder events
+    'payment_due': 'Payment due date reminder',
+    'profile_incomplete': 'Profile completion reminder',
+    'account_security': 'Account security reminder',
+    'verification_required': 'Account verification required',
+    'deadline_approaching': 'Project deadline approaching',
+    'payment_overdue': 'Payment overdue notice'
+  };
+  
+  return descriptions[eventId] || 'Unknown event type';
+}
+
+// Add cache-control headers for debug routes
 router.use('/debug/*', (req, res, next) => {
   res.set({
     'Cache-Control': 'no-cache, no-store, must-revalidate',
