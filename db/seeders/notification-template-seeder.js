@@ -1,15 +1,14 @@
-// src/db/seeders/notification-template-seeder.js
-
 'use strict';
 
-require('dotenv').config(); // ✅ Load environment variables early
+// ✅ Load environment variables manually
+require('dotenv').config();
 
 const { v4: uuidv4 } = require('uuid');
-const db = require('../../db'); // ✅ Your db/index.js that uses connectionManager
-const logger = require('../../utils/logger'); // optional if you want logging
+const db = require('../../db'); // ✅ your db/index.js
+const { initializeDatabase } = require('../../bootstrap/initializers/database'); // ✅ proper database initializer
 
 const notificationTemplates = [
-  // Contract Events - Customer App
+  // Customer App Templates
   {
     appId: 'com.myusta.myustacustomer',
     eventId: 'contract.sent',
@@ -74,7 +73,7 @@ const notificationTemplates = [
     category: 'contracts',
     defaultEnabled: true
   },
-  // Contract Events - USTA App
+  // Usta App Templates
   {
     appId: 'com.myusta.myusta',
     eventId: 'contract.sent',
@@ -139,13 +138,13 @@ const notificationTemplates = [
     category: 'contracts',
     defaultEnabled: true
   }
-  // Extend with more templates: activities, reminders...
+  // Extend more if needed...
 ];
 
 async function seedNotificationTemplates() {
   try {
     console.log('🔧 Initializing database connection...');
-    await db.initialize(); // 🔥 This will call connectionManager.initialize() internally
+    await initializeDatabase(); // ✅ Proper app-style database initialization
 
     const { NotificationTemplate } = db.getModels();
 
@@ -181,10 +180,10 @@ async function seedNotificationTemplates() {
     }
 
     console.log('🎉 Notification templates seeding complete.');
-    process.exit(0); // Exit script after seeding
+    process.exit(0); // Exit successfully
   } catch (err) {
     console.error('❌ Error seeding notification templates:', err);
-    process.exit(1);
+    process.exit(1); // Exit with error
   }
 }
 
