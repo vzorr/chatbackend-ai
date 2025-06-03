@@ -479,4 +479,80 @@ class NotificationService {
   }
 }
 
+  /**
+   * Get all notifications (Admin use)
+   */
+  async getAllNotifications(options = {}) {
+    await this.ensureDbInitialized();
+    const models = db.getModels();
+    
+    const { limit = 50, offset = 0, filters = {} } = options;
+    
+    const where = {};
+    
+    if (filters.appId) {
+      where.appId = filters.appId;
+    }
+    
+    if (filters.userId) {
+      where.userId = filters.userId;
+    }
+
+    if (filters.eventId) {
+      where.eventId = filters.eventId;
+    }
+    
+    if (filters.read !== undefined) {
+      where.readAt = filters.read ? null : { [models.Sequelize.Op.not]: null };
+    }
+    
+    return await models.NotificationLog.findAndCountAll({
+      where,
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']]
+    });
+
+
+    
+  }
+
+
+    /**
+   * Get all notifications (Admin use)
+   */
+  async getAllNotifications(options = {}) {
+    await this.ensureDbInitialized();
+    const models = db.getModels();
+    
+    const { limit = 50, offset = 0, filters = {} } = options;
+    
+    const where = {};
+    
+    if (filters.appId) {
+      where.appId = filters.appId;
+    }
+    
+    if (filters.userId) {
+      where.userId = filters.userId;
+    }
+
+    if (filters.eventId) {
+      where.eventId = filters.eventId;
+    }
+    
+    if (filters.read !== undefined) {
+      where.readAt = filters.read ? null : { [models.Sequelize.Op.not]: null };
+    }
+    
+    return await models.NotificationLog.findAndCountAll({
+      where,
+      limit,
+      offset,
+      order: [['createdAt', 'DESC']]
+    });
+  }
+
+  
+
 module.exports = new NotificationService();

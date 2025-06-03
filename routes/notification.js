@@ -804,4 +804,56 @@ router.post('/bulk-read',
   })
 );
 
+/**
+ * @route GET /api/v1/notifications/all
+ * @desc Get all notifications (Admin Only)
+ * @access Private (Admin Only)
+ */
+router.get('/all', 
+  authenticate, 
+  //authorize('administrator'), // Only admins
+  asyncHandler(async (req, res) => {
+    const { limit = 50, offset = 0, unreadOnly = false, appId, userId, eventId } = req.query;
+    
+    // Validation
+    const parsedLimit = parseInt(limit);
+    const parsedOffset = parseInt(offset);
+
+    if (isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 200) {
+      throw createOperationalError('Limit must be a number between 1 and 200', 400, 'INVALID_LIMIT');
+    }
+
+    if (isNaN(parsedOffset) || parsedOffset < 0) {
+      throw createOperationalError('Offset must be a non-negative number', 400, 'INVALID_OFFSET');
+    }
+
+    const options = {
+      limit: parsedLimit,
+      offset: parsedOffset,
+      filters: {}
+    };
+
+    if (unreadOnly === 'true') options.filters.read = false;
+    if (appId) options.filters.appId = appId;
+    if (userId) options.filters.userId = userId;
+    if (eventId) options.filters.eventId = eventId;
+    
+    try {
+      const { rows: notifications, count } = await notificationService.getAllNotifications(options);
+      
+      res.json({
+        success: true,
+        notifications,
+        total: count,
+        limit: options.limit,
+        offset: options.offset,
+        hasMore: (options.offset + notifications.length) < count
+      });
+    } catch (error) {
+      throw createSystemError('Failed to retrieve all notifications', error);
+    }
+  })
+);
+
+
 module.exports = router;
