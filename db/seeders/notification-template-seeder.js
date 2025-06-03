@@ -1,11 +1,11 @@
+//use this seeder to as a way to create new seeder and seed into chat database
 'use strict';
-require('dotenv').config(); // ✅ load .env for standalone script
-// ✅ Load environment variables manually
 require('dotenv').config();
 
 const { v4: uuidv4 } = require('uuid');
-const db = require('../../db'); // ✅ your db/index.js
-const { initializeDatabase } = require('../../bootstrap/initializers/database'); // ✅ proper database initializer
+const db = require('../../db'); // your connectionManager
+const { initializeDatabase } = require('../../bootstrap/initializers/database');
+const models = require('../models'); // import the entire object
 
 const notificationTemplates = [
   // Customer App Templates
@@ -141,18 +141,20 @@ const notificationTemplates = [
   // Extend more if needed...
 ];
 
+
 async function seedNotificationTemplates() {
   try {
     console.log('🔧 Initializing database connection...');
-    await initializeDatabase(); // 1️⃣ DB connection
-    await db.initializeModels(); // 2️⃣ Load Sequelize models after DB connection
+    await initializeDatabase(); // 1️⃣ Connect DB
 
-    const { NotificationTemplate } = db.getModels(); // 3️⃣ Now models will be ready!
+    console.log('🔧 Initializing models...');
+    await models.initialize(); // 2️⃣ Correct way to initialize models
+
+    const { NotificationTemplate } = db.getModels(); // 3️⃣ Now models are ready!
 
     console.log('🧹 Deleting all existing notification templates...');
     await NotificationTemplate.destroy({ where: {}, truncate: true });
 
-    console.log('🚀 Seeding templates...');
     for (const template of notificationTemplates) {
       const [record, created] = await NotificationTemplate.findOrCreate({
         where: {
