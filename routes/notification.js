@@ -10,23 +10,45 @@ const db = require('../db/models');
 // ✅ BETTER: Direct import from exception handler
 const { asyncHandler, createOperationalError, createSystemError } = require('../middleware/exceptionHandler');
 
+
+
+
 /**
  * @route GET /api/v1/notifications/templates
  * @desc Get notification templates
  * @access Private
  */
-router.get('/templates', 
+/**
+ * @route GET /api/v1/notifications/templates
+ * @desc Get notification templates (filtered by appId if provided)
+ * @access Private
+ */
+ router.get('/templates', 
   authenticate, 
   asyncHandler(async (req, res) => {
     const { appId } = req.query;
-    
-    if (!appId) {
-      throw createOperationalError('App ID is required', 400, 'MISSING_APP_ID');
-    }
-    
+
     try {
-      const templates = await notificationService.getTemplates(appId);
-      
+      if (typeof db.waitForInitialization === 'function') {
+        await db.waitForInitialization();
+      }
+
+      const models = typeof db.getModels === 'function' ? db.getModels() : db;
+      const NotificationTemplate = models.NotificationTemplate;
+
+      if (!NotificationTemplate) {
+        throw createSystemError('NotificationTemplate model not found');
+      }
+
+      let whereCondition = {};
+      if (appId) {
+        whereCondition = { appId };
+      }
+
+      const templates = await NotificationTemplate.findAll({
+        where: whereCondition
+      });
+
       res.json({
         success: true,
         templates
