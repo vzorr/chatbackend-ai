@@ -40,7 +40,7 @@ class Bootstrap {
       // Step 0: Handle cluster mode
       logger.info('📋 [Step 0/7] Initializing cluster mode...');
       this.clusterInfo = await initializeCluster();
-      logger.info('✅ [Step 0/7] Cluster mode initialized', {
+      logger.info(' [Step 0/7] Cluster mode initialized', {
         isMaster: this.clusterInfo.isMaster,
         isWorker: this.clusterInfo.isWorker,
         workerId: this.clusterInfo.workerId
@@ -48,44 +48,44 @@ class Bootstrap {
       
       // If this is the primary process in cluster mode, we shouldn't start the server
       if (this.clusterInfo.isMaster) {
-        logger.info('✅ Primary process initialized, workers will start servers');
+        logger.info(' Primary process initialized, workers will start servers');
         return { isPrimary: true };
       }
 
       // Step 1: Log environment information
       logger.info('📋 [Step 1/7] Logging environment information...');
       await logEnvironmentInfo();
-      logger.info('✅ [Step 1/7] Environment information logged');
+      logger.info(' [Step 1/7] Environment information logged');
 
       // Step 2: Validate environment and dependencies
       logger.info('📋 [Step 2/7] Validating prerequisites...');
       await this.validatePrerequisites();
-      logger.info('✅ [Step 2/7] Prerequisites validated');
+      logger.info(' [Step 2/7] Prerequisites validated');
 
       // Step 3: Initialize core components
       logger.info('📋 [Step 3/7] Initializing core components...');
       await this.initializeCoreComponents();
-      logger.info('✅ [Step 3/7] Core components initialized');
+      logger.info(' [Step 3/7] Core components initialized');
 
       // Step 4: Configure Express app
       logger.info('📋 [Step 4/7] Configuring Express application...');
       await this.configureExpressApp();
-      logger.info('✅ [Step 4/7] Express application configured');
+      logger.info(' [Step 4/7] Express application configured');
 
       // Step 5: Initialize metrics
       logger.info('📋 [Step 5/7] Initializing metrics system...');
       await initializeMetrics(this.app);
-      logger.info('✅ [Step 5/7] Metrics system initialized');
+      logger.info(' [Step 5/7] Metrics system initialized');
 
       // Step 6: Start the server
       logger.info('📋 [Step 6/7] Starting HTTP server...');
       await this.startServer();
-      logger.info('✅ [Step 6/7] HTTP server started');
+      logger.info(' [Step 6/7] HTTP server started');
 
       // Step 7: Setup shutdown handlers
       logger.info('📋 [Step 7/7] Setting up shutdown handlers...');
       this.setupShutdownHandlers();
-      logger.info('✅ [Step 7/7] Shutdown handlers configured');
+      logger.info(' [Step 7/7] Shutdown handlers configured');
 
       // Step 8: Initialize notifications
     
@@ -134,20 +134,20 @@ class Bootstrap {
       // Validate configuration schema
       logger.info('📝 Validating configuration schema...');
       const validatedConfig = await validateConfig(config);
-      logger.info('✅ Configuration schema validated');
+      logger.info(' Configuration schema validated');
       
       // Validate environment variables
       logger.info('🌍 Validating environment variables...');
       await validateEnvironment();
-      logger.info('✅ Environment variables validated');
+      logger.info(' Environment variables validated');
       
       // Validate system dependencies
-      logger.info('📦 Validating system dependencies...');
+      logger.info(' Validating system dependencies...');
       await validateDependencies();
-      logger.info('✅ System dependencies validated');
+      logger.info(' System dependencies validated');
       
       const duration = Date.now() - startTime;
-      logger.info('✅ Prerequisites validation completed', {
+      logger.info(' Prerequisites validation completed', {
         duration: `${duration}ms`
       });
       
@@ -169,23 +169,23 @@ class Bootstrap {
     
     try {
       // Initialize in dependency order
-      logger.info('💾 Initializing database...');
+      logger.info(' Initializing database...');
       await initializeDatabase();
-      logger.info('✅ Database initialized');
+      logger.info(' Database initialized');
       
-      logger.info('💾 Initializing database models...');
+      logger.info(' Initializing database models...');
       await initializeModels(); // Initialize database + models
 
-      logger.info('✅ Database models initialized');
+      logger.info(' Database models initialized');
 
     
 
       logger.info('🛠️ Initializing services...');
       await initializeServices();
-      logger.info('✅ Services initialized');
+      logger.info(' Services initialized');
       
       const duration = Date.now() - startTime;
-      logger.info('✅ Core components initialization completed', {
+      logger.info(' Core components initialization completed', {
         duration: `${duration}ms`,
         componentsInitialized: ['database', 'services']
       });
@@ -210,30 +210,30 @@ class Bootstrap {
       const { app, server } = await setupExpress();
       this.app = app;
       this.server = server;
-      logger.info('✅ Express server setup complete');
+      logger.info(' Express server setup complete');
       
       // Initialize Socket.IO
       logger.info('🔌 Initializing Socket.IO...');
       this.io = await initializeSocketIO(this.server);
-      logger.info('✅ Socket.IO initialized');
+      logger.info(' Socket.IO initialized');
       
       // Setup middleware stack
       logger.info('📚 Setting up middleware stack...');
       await setupMiddleware(this.app);
-      logger.info('✅ Middleware stack configured');
+      logger.info(' Middleware stack configured');
       
       // Setup routes
       logger.info('🛣️ Setting up application routes...');
       await setupRoutes(this.app);
-      logger.info('✅ Routes configured');
+      logger.info(' Routes configured');
       
       // Setup error handling
       logger.info('🚨 Setting up error handling...');
       await setupErrorHandling(this.app);
-      logger.info('✅ Error handling configured');
+      logger.info(' Error handling configured');
       
       const duration = Date.now() - startTime;
-      logger.info('✅ Express application configuration completed', {
+      logger.info(' Express application configuration completed', {
         duration: `${duration}ms`,
         componentsConfigured: ['express', 'socketio', 'middleware', 'routes', 'errorHandling']
       });
@@ -257,7 +257,7 @@ class Bootstrap {
       await startHTTPServer(this.server, this.io);
       
       const duration = Date.now() - startTime;
-      logger.info('✅ HTTP server started successfully', {
+      logger.info(' HTTP server started successfully', {
         duration: `${duration}ms`,
         url: `http://${config.server.host}:${config.server.port}`
       });
@@ -273,7 +273,7 @@ class Bootstrap {
   setupShutdownHandlers() {
     logger.info('🛑 Setting up graceful shutdown handlers...');
     setupGracefulShutdown(this.server, this.io);
-    logger.info('✅ Graceful shutdown handlers configured', {
+    logger.info(' Graceful shutdown handlers configured', {
       signals: ['SIGTERM', 'SIGINT', 'uncaughtException', 'unhandledRejection']
     });
   }
@@ -290,22 +290,22 @@ class Bootstrap {
       if (this.server) {
         logger.info('🔒 Closing HTTP server...');
         await new Promise(resolve => this.server.close(resolve));
-        logger.info('✅ HTTP server closed');
+        logger.info(' HTTP server closed');
       }
       
       if (this.io) {
         logger.info('🔌 Closing Socket.IO connections...');
         await new Promise(resolve => this.io.close(resolve));
-        logger.info('✅ Socket.IO connections closed');
+        logger.info(' Socket.IO connections closed');
       }
       
       // Cleanup other resources
       logger.info('🛠️ Cleaning up services...');
       await this.cleanupServices();
-      logger.info('✅ Services cleanup completed');
+      logger.info(' Services cleanup completed');
       
       const duration = Date.now() - startTime;
-      logger.info('✅ Cleanup process completed', {
+      logger.info(' Cleanup process completed', {
         duration: `${duration}ms`
       });
     } catch (error) {
@@ -321,39 +321,39 @@ class Bootstrap {
     
     // Updated import paths for your project structure
     const connectionManager = require('../db/connectionManager');
-    const notificationManager = require('../services/notifications/notificationManager');
+    const notificationService = require('../services/notifications/notificationService');
     const redisService = require('../services/redis');
     const queueService = require('../services/queue/queueService');
     
     // Close database connection
     if (connectionManager) {
-      logger.info('💾 Closing database connections...');
+      logger.info(' Closing database connections...');
       await connectionManager.close();
-      logger.info('✅ Database connections closed');
+      logger.info(' Database connections closed');
     }
     
     // Close notification services
-    if (notificationManager && notificationManager.initialized) {
-      logger.info('🔔 Shutting down notification services...');
-      await notificationManager.shutdown();
-      logger.info('✅ Notification services shut down');
+    if (notificationService && notificationService.initialized) {
+      logger.info(' Shutting down notification services...');
+      await notificationService.shutdown();
+      logger.info(' Notification services shut down');
     }
     
     // Close Redis connection
     if (redisService && redisService.redisClient) {
-      logger.info('📦 Closing Redis connection...');
+      logger.info(' Closing Redis connection...');
       await redisService.redisClient.quit();
-      logger.info('✅ Redis connection closed');
+      logger.info(' Redis connection closed');
     }
     
     // Close Queue service connection
     if (queueService && queueService.redisClient && queueService.redisClient.quit) {
       logger.info('📋 Closing Queue service connection...');
       await queueService.redisClient.quit();
-      logger.info('✅ Queue service connection closed');
+      logger.info(' Queue service connection closed');
     }
     
-    logger.info('✅ Services cleanup completed');
+    logger.info(' Services cleanup completed');
   }
 }
 

@@ -200,10 +200,10 @@ async function closeCacheConnections() {
 async function closeNotificationServices() {
   logger.info('🔄 [Shutdown] Closing notification services...');
   
-  const { notificationManager } = require('../../services/notificationManager');
+  const { notificationService } = require('../../services/notifications/notificationService');
   
-  if (notificationManager && notificationManager.initialized) {
-    await notificationManager.close();
+  if (notificationService && notificationService.initialized) {
+    await notificationService.close();
     logger.info('✅ [Shutdown] Notification services closed');
   }
 }

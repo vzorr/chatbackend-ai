@@ -4,7 +4,7 @@ const db = require('../../db');
 const logger = require('../../utils/logger');
 const redisService = require('../redis');
 const queueService = require('./queueService');
-const notificationManager = require('../notifications/notificationManager');
+const notificationService = require('../notifications/notificationService');
 
 class MessageQueueService {
   constructor() {

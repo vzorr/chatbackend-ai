@@ -1,15 +1,16 @@
-// bootstrap/initializers/notifications.js
+// bootstrap/initializers/notifications.js - UPDATED VERSION
 const { logger } = require('../../utils/logger');
-const notificationManager = require('../../services/notifications/notificationManager');
+const notificationService = require('../../services/notifications/notificationService');
+const fcmService = require('../../services/notifications/fcm');
 const config = require('../../config/config');
 
 async function initializeNotifications() {
   const startTime = Date.now();
-  logger.info('🔧 [Notifications] Starting notification manager initialization...');
+  logger.info('🔧 [Notifications] Starting notification service initialization...');
 
   try {
     // Check if notifications are enabled
-    if (!config.notifications.enabled) {
+    if (!config.notifications?.enabled) {
       logger.info('⏭️ [Notifications] Notifications disabled, skipping initialization');
       return;
     }
@@ -17,27 +18,31 @@ async function initializeNotifications() {
     // Validate notification configuration
     await validateNotificationConfig();
     
-    // Initialize notification providers
-    await initializeProviders();
+    // Initialize notification service
+    const initSuccess = await notificationService.initialize();
     
-    // Initialize notification manager
-    await notificationManager.initialize();
+    if (!initSuccess) {
+      throw new Error('Notification service initialization failed');
+    }
     
     // Test notification services (development only)
-    if (config.server.nodeEnv === 'development' && config.notifications.testOnStartup) {
+    if (config.server?.nodeEnv === 'development' && config.notifications?.testOnStartup) {
       await testNotificationServices();
     }
     
     const duration = Date.now() - startTime;
-    const providers = Array.from(notificationManager.providers.keys());
     
-    logger.info('✅ [Notifications] Notification manager initialized', {
+    // Check which providers are available
+    const providers = [];
+    if (notificationService.providers?.has('FCM')) providers.push('FCM');
+    if (notificationService.providers?.has('APN')) providers.push('APN');
+    
+    logger.info('✅ [Notifications] Notification service initialized', {
       duration: `${duration}ms`,
       providers: providers,
-      fcmEnabled: notificationManager.providers.has('FCM'),
-      apnEnabled: notificationManager.providers.has('APN'),
-      emailEnabled: notificationManager.providers.has('EMAIL'),
-      smsEnabled: notificationManager.providers.has('SMS')
+      fcmEnabled: providers.includes('FCM'),
+      apnEnabled: providers.includes('APN'),
+      serviceInitialized: notificationService.initialized
     });
     
   } catch (error) {
@@ -47,8 +52,10 @@ async function initializeNotifications() {
     });
     
     // Don't throw if notifications are not critical
-    if (config.notifications.critical) {
+    if (config.notifications?.critical) {
       throw error;
+    } else {
+      logger.warn('⚠️ [Notifications] Continuing without notifications (not marked as critical)');
     }
   }
 }
@@ -56,235 +63,186 @@ async function initializeNotifications() {
 async function validateNotificationConfig() {
   logger.info('🔍 [Notifications] Validating notification configuration...');
   
-  const providers = config.notifications.providers || {};
+  const providers = config.notifications?.providers || {};
   
   // Validate FCM configuration
   if (providers.fcm?.enabled) {
-    if (!providers.fcm.credentials) {
-      throw new Error('FCM credentials not configured');
+    if (!providers.fcm.credentials && !config.notifications?.fcm?.credentials) {
+      logger.warn('⚠️ [Notifications] FCM credentials not configured - FCM will be disabled');
+    } else {
+      logger.info('✅ [Notifications] FCM configuration found');
     }
-    logger.info('✅ [Notifications] FCM configuration validated');
   }
   
-  // Validate APN configuration
+  // Validate APN configuration (for future use)
   if (providers.apn?.enabled) {
     if (!providers.apn.key || !providers.apn.keyId || !providers.apn.teamId) {
-      throw new Error('APN configuration incomplete');
-    }
-    logger.info('✅ [Notifications] APN configuration validated');
-  }
-  
-  // Validate Email configuration
-  if (providers.email?.enabled) {
-    if (!providers.email.apiKey || !providers.email.from) {
-      throw new Error('Email configuration incomplete');
-    }
-    logger.info('✅ [Notifications] Email configuration validated');
-  }
-  
-  // Validate SMS configuration
-  if (providers.sms?.enabled) {
-    if (!providers.sms.apiKey || !providers.sms.from) {
-      throw new Error('SMS configuration incomplete');
-    }
-    logger.info('✅ [Notifications] SMS configuration validated');
-  }
-}
-
-async function initializeProviders() {
-  logger.info('🔧 [Notifications] Initializing notification providers...');
-  
-  const providers = config.notifications.providers || {};
-  
-  // Initialize FCM (Firebase Cloud Messaging)
-  if (providers.fcm?.enabled) {
-    try {
-      await initializeFCM(providers.fcm);
-      logger.info('✅ [Notifications] FCM provider initialized');
-    } catch (error) {
-      logger.error('❌ [Notifications] Failed to initialize FCM', {
-        error: error.message
-      });
-      if (providers.fcm.critical) throw error;
+      logger.warn('⚠️ [Notifications] APN configuration incomplete - APN will be disabled');
+    } else {
+      logger.info('✅ [Notifications] APN configuration validated');
     }
   }
   
-  // Initialize APN (Apple Push Notifications)
-  if (providers.apn?.enabled) {
-    try {
-      await initializeAPN(providers.apn);
-      logger.info('✅ [Notifications] APN provider initialized');
-    } catch (error) {
-      logger.error('❌ [Notifications] Failed to initialize APN', {
-        error: error.message
-      });
-      if (providers.apn.critical) throw error;
-    }
-  }
-  
-  // Initialize Email provider
-  if (providers.email?.enabled) {
-    try {
-      await initializeEmailProvider(providers.email);
-      logger.info('✅ [Notifications] Email provider initialized');
-    } catch (error) {
-      logger.error('❌ [Notifications] Failed to initialize Email provider', {
-        error: error.message
-      });
-      if (providers.email.critical) throw error;
-    }
-  }
-  
-  // Initialize SMS provider
-  if (providers.sms?.enabled) {
-    try {
-      await initializeSMSProvider(providers.sms);
-      logger.info('✅ [Notifications] SMS provider initialized');
-    } catch (error) {
-      logger.error('❌ [Notifications] Failed to initialize SMS provider', {
-        error: error.message
-      });
-      if (providers.sms.critical) throw error;
-    }
-  }
-}
-
-async function initializeFCM(fcmConfig) {
-  const admin = require('firebase-admin');
-  
-  // Initialize Firebase Admin SDK
-  admin.initializeApp({
-    credential: admin.credential.cert(fcmConfig.credentials),
-    projectId: fcmConfig.projectId
-  });
-  
-  // Register with notification manager
-  notificationManager.registerProvider('FCM', {
-    send: async (token, payload) => {
-      return await admin.messaging().send({
-        token,
-        notification: payload.notification,
-        data: payload.data
-      });
-    }
-  });
-}
-
-async function initializeAPN(apnConfig) {
-  const apn = require('apn');
-  
-  // Create APN provider
-  const provider = new apn.Provider({
-    token: {
-      key: apnConfig.key,
-      keyId: apnConfig.keyId,
-      teamId: apnConfig.teamId
-    },
-    production: config.server.nodeEnv === 'production'
-  });
-  
-  // Register with notification manager
-  notificationManager.registerProvider('APN', {
-    send: async (deviceToken, payload) => {
-      const notification = new apn.Notification();
-      notification.alert = payload.alert;
-      notification.badge = payload.badge;
-      notification.sound = payload.sound || 'default';
-      notification.payload = payload.data;
-      
-      return await provider.send(notification, deviceToken);
-    }
-  });
-}
-
-async function initializeEmailProvider(emailConfig) {
-  // Example using SendGrid
-  const sgMail = require('@sendgrid/mail');
-  sgMail.setApiKey(emailConfig.apiKey);
-  
-  // Register with notification manager
-  notificationManager.registerProvider('EMAIL', {
-    send: async (to, payload) => {
-      const msg = {
-        to,
-        from: emailConfig.from,
-        subject: payload.subject,
-        text: payload.text,
-        html: payload.html
-      };
-      
-      return await sgMail.send(msg);
-    }
-  });
-}
-
-async function initializeSMSProvider(smsConfig) {
-  // Example using Twilio
-  const twilio = require('twilio');
-  const client = twilio(smsConfig.accountSid, smsConfig.authToken);
-  
-  // Register with notification manager
-  notificationManager.registerProvider('SMS', {
-    send: async (to, payload) => {
-      return await client.messages.create({
-        body: payload.message,
-        from: smsConfig.from,
-        to
-      });
-    }
-  });
+  logger.info('✅ [Notifications] Configuration validation completed');
 }
 
 async function testNotificationServices() {
   logger.info('🧪 [Notifications] Testing notification services...');
   
   try {
-    // Test each enabled provider
     const testResults = {};
     
-    if (notificationManager.providers.has('FCM')) {
+    // Test FCM service
+    if (fcmService.initialized) {
       testResults.fcm = await testFCMService();
+    } else {
+      testResults.fcm = { status: 'disabled', reason: 'FCM not initialized' };
     }
     
-    if (notificationManager.providers.has('APN')) {
-      testResults.apn = await testAPNService();
-    }
-    
-    if (notificationManager.providers.has('EMAIL')) {
-      testResults.email = await testEmailService();
-    }
-    
-    if (notificationManager.providers.has('SMS')) {
-      testResults.sms = await testSMSService();
-    }
+    // Test notification service core functionality
+    testResults.notificationService = await testNotificationServiceCore();
     
     logger.info('✅ [Notifications] Service tests completed', testResults);
+    return testResults;
   } catch (error) {
     logger.error('❌ [Notifications] Service test failed', {
       error: error.message
     });
+    return { error: error.message };
   }
 }
 
-// Test functions (implement actual tests)
 async function testFCMService() {
-  // Implement FCM test
-  return { status: 'success', latency: '120ms' };
+  try {
+    const startTime = Date.now();
+    
+    // Test FCM service initialization
+    if (!fcmService.initialized) {
+      return { status: 'failed', reason: 'FCM service not initialized' };
+    }
+    
+    // You could add a dry-run test here if needed
+    // For now, just check if the service is ready
+    const latency = Date.now() - startTime;
+    
+    return { 
+      status: 'success', 
+      latency: `${latency}ms`,
+      initialized: fcmService.initialized
+    };
+  } catch (error) {
+    return { 
+      status: 'failed', 
+      error: error.message 
+    };
+  }
 }
 
-async function testAPNService() {
-  // Implement APN test
-  return { status: 'success', latency: '150ms' };
+async function testNotificationServiceCore() {
+  try {
+    const startTime = Date.now();
+    
+    // Test basic service functionality
+    const testUserId = 'test-user-id';
+    const testAppId = 'test-app';
+    
+    // Test if service can handle basic operations without crashing
+    try {
+      // This should gracefully handle missing templates/users
+      await notificationService.getUserNotifications(testUserId, { limit: 1 });
+    } catch (error) {
+      // Expected to fail with missing data, but service should handle it gracefully
+      if (error.message.includes('models not available') || 
+          error.message.includes('not initialized')) {
+        return { status: 'failed', reason: 'Database not ready' };
+      }
+    }
+    
+    const latency = Date.now() - startTime;
+    
+    return { 
+      status: 'success', 
+      latency: `${latency}ms`,
+      initialized: notificationService.initialized
+    };
+  } catch (error) {
+    return { 
+      status: 'failed', 
+      error: error.message 
+    };
+  }
 }
 
-async function testEmailService() {
-  // Implement email test
-  return { status: 'success', latency: '200ms' };
+// Additional helper functions for notification management
+
+/**
+ * Get notification service status
+ */
+async function getNotificationStatus() {
+  return {
+    serviceInitialized: notificationService.initialized,
+    fcmInitialized: fcmService.initialized,
+    providers: notificationService.providers ? Array.from(notificationService.providers.keys()) : [],
+    configEnabled: config.notifications?.enabled || false
+  };
 }
 
-async function testSMSService() {
-  // Implement SMS test
-  return { status: 'success', latency: '180ms' };
+/**
+ * Restart notification service (for maintenance)
+ */
+async function restartNotificationService() {
+  logger.info('🔄 [Notifications] Restarting notification service...');
+  
+  try {
+    // Shutdown if needed
+    if (notificationService.shutdown) {
+      await notificationService.shutdown();
+    }
+    
+    // Reinitialize
+    await initializeNotifications();
+    
+    logger.info('✅ [Notifications] Notification service restarted successfully');
+    return true;
+  } catch (error) {
+    logger.error('❌ [Notifications] Failed to restart notification service', {
+      error: error.message
+    });
+    return false;
+  }
 }
 
-module.exports = { initializeNotifications };
+/**
+ * Health check for notifications
+ */
+async function healthCheck() {
+  const status = await getNotificationStatus();
+  
+  const health = {
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    services: {
+      notificationService: status.serviceInitialized ? 'up' : 'down',
+      fcm: status.fcmInitialized ? 'up' : 'down'
+    },
+    providers: status.providers
+  };
+  
+  // Determine overall health
+  if (!status.serviceInitialized) {
+    health.status = 'unhealthy';
+    health.issues = ['Notification service not initialized'];
+  } else if (!status.fcmInitialized && config.notifications?.providers?.fcm?.enabled) {
+    health.status = 'degraded';
+    health.issues = ['FCM service not available'];
+  }
+  
+  return health;
+}
+
+module.exports = { 
+  initializeNotifications,
+  getNotificationStatus,
+  restartNotificationService,
+  healthCheck
+};

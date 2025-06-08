@@ -3,7 +3,7 @@ const logger = require('../../utils/logger');
 const messageService = require('../../services/socket/messageService');
 const conversationService = require('../../services/socket/conversationService');
 const presenceService = require('../../services/socket/presenceService');
-const notificationManager = require('../../services/notifications/notificationManager');
+const notificationService = require('../../services/notifications/notificationService');
 const userService = require('../../services/socket/userService');
 
 module.exports = (io, socket) => {
@@ -13,7 +13,7 @@ module.exports = (io, socket) => {
     try {
       const result = await messageService.handleSendMessage(io, socket, messagePayload);
       if (result.notifyRecipients && result.participants) {
-        await notificationManager.sendMessageNotification(result.message, result.participants);
+        await notificationService.sendMessageNotification(result.message, result.participants);
       }
     } catch (error) {
       logger.error(`Error handling send_message: ${error}`);

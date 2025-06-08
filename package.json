@@ -12,7 +12,14 @@
     "setup": "node scripts/initialize.js",
     "test": "jest",
     "lint": "eslint .",
-    "swagger:generate": "node scripts/generateSwaggerDocs.js"
+    "swagger:generate": "node scripts/generateSwaggerDocs.js",
+    "seed": "npx sequelize-cli db:seed:all",
+    "seed:undo": "npx sequelize-cli db:seed:undo:all",
+    "seed:create": "npx sequelize-cli seed:generate --name",
+    "seed:status": "npx sequelize-cli db:seed:status",
+    "seed:templates": "npx sequelize-cli db:seed --seed db/seeders/notification-template-seeder.js",
+    "seed:users": "npx sequelize-cli db:seed --seed *demo-users.js",
+    "seed:specific": "npx sequelize-cli db:seed --seed"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.787.0",

@@ -13,7 +13,7 @@ const authMiddleware = require('../middleware/authentication');
 const { asyncHandler, createOperationalError, createSystemError } = require('../middleware/exceptionHandler');
 
 const userSyncService = require('../services/sync/userSyncService');
-const notificationManager = require('../services/notifications/notificationManager');
+const notificationService = require('../services/notifications/notificationService');
 
 // Debug route to verify router is working
 router.get('/test', asyncHandler(async (req, res) => {

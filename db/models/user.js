@@ -18,6 +18,16 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING,
       allowNull: true
     },
+    firstName: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      comment: 'User\'s first name'
+    },
+    lastName: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      comment: 'User\'s last name'
+    },
     phone: {
       type: DataTypes.STRING,
       allowNull: false,
@@ -68,8 +78,34 @@ module.exports = (sequelize, DataTypes) => {
       {
         unique: true,
         fields: ['externalId']
+      },
+      {
+        fields: ['firstName']
+      },
+      {
+        fields: ['lastName']
+      },
+      {
+        fields: ['firstName', 'lastName']
       }
-    ]
+    ],
+    // Add virtual field for full name
+    getterMethods: {
+      fullName() {
+        const firstName = this.getDataValue('firstName');
+        const lastName = this.getDataValue('lastName');
+        
+        if (firstName && lastName) {
+          return `${firstName} ${lastName}`;
+        } else if (firstName) {
+          return firstName;
+        } else if (lastName) {
+          return lastName;
+        } else {
+          return this.getDataValue('name') || 'Unknown User';
+        }
+      }
+    }
   });
 
   User.associate = function(models) {
@@ -105,14 +141,29 @@ module.exports = (sequelize, DataTypes) => {
       if (!user) {
         // Generate UUID manually for id
         user = await this.create({
-          id: uuidv4(),   // ✅ Correct and explicit UUID generation
+          id: uuidv4(),
           externalId,
           name: tokenData.name || 'User',
-          phone: tokenData.phone || 'unknown',  // Ensure phone is present due to allowNull: false
+          firstName: tokenData.firstName || tokenData.first_name || null,
+          lastName: tokenData.lastName || tokenData.last_name || null,
+          phone: tokenData.phone || 'unknown',
           email: tokenData.email || null,
           role: role,
           isOnline: true
         });
+      } else {
+        // Update existing user with new firstName/lastName if provided
+        const updates = {};
+        if (tokenData.firstName || tokenData.first_name) {
+          updates.firstName = tokenData.firstName || tokenData.first_name;
+        }
+        if (tokenData.lastName || tokenData.last_name) {
+          updates.lastName = tokenData.lastName || tokenData.last_name;
+        }
+        
+        if (Object.keys(updates).length > 0) {
+          await user.update(updates);
+        }
       }
 
       return user;

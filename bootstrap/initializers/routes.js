@@ -1,4 +1,4 @@
-// bootstrap/initializers/routes.js
+// bootstrap/initializers/routes.js - UPDATED VERSION
 const { logger } = require('../../utils/logger');
 const config = require('../../config/config');
 
@@ -9,7 +9,6 @@ const conversationRoutes = require('../../routes/conversation');  // Changed fro
 const messageRoutes = require('../../routes/message');  // Changed from 'messages'
 const adminRoutes = require('../../routes/admin');
 const notificationsRoutes = require('../../routes/notification');
-
 
 async function setupRoutes(app) {
   const startTime = Date.now();
@@ -29,12 +28,12 @@ async function setupRoutes(app) {
     setupNotificationRoutes(app);
     
     // Setup metrics endpoint
-    if (config.monitoring.metrics.enabled) {
+    if (config.monitoring?.metrics?.enabled) {
       setupMetricsEndpoint(app);
     }
     
     // Setup webhook routes
-    if (config.webhooks.enabled) {
+    if (config.webhooks?.enabled) {
       setupWebhookRoutes(app);
     }
     
@@ -52,8 +51,8 @@ async function setupRoutes(app) {
       duration: `${duration}ms`,
       routeGroups: 9,
       featuresEnabled: {
-        metrics: config.monitoring.metrics.enabled,
-        webhooks: config.webhooks.enabled
+        metrics: config.monitoring?.metrics?.enabled || false,
+        webhooks: config.webhooks?.enabled || false
       }
     });
     
@@ -102,160 +101,243 @@ function setupAPIRoutes(app) {
   
   logger.info('✅ [Routes] API routes configured', {
     version: 'v1',
-    routes: ['auth', 'users', 'conversations', 'messages', 'admin', 'notifications' ]
+    routes: ['auth', 'users', 'conversations', 'messages', 'admin', 'notifications']
   });
 }
 
 function setupFileUploadRoutes(app) {
   logger.info('🔧 [Routes] Setting up file upload routes...');
   
-  const authMiddleware = require('../../middleware/authentication');
-  const { createUploadMiddleware } = require('../../services/file-upload');
-  const upload = createUploadMiddleware();
-  
-  app.post('/upload', 
-    authMiddleware.authenticate.bind(authMiddleware),
-    upload.single('file'), 
-    (req, res, next) => {
-      if (!req.file) {
-        logger.warn('⚠️ [Routes] File upload attempted without file', { 
-          correlationId: req.correlationId 
+  try {
+    const authMiddleware = require('../../middleware/authentication');
+    const { createUploadMiddleware } = require('../../services/file-upload');
+    const upload = createUploadMiddleware();
+    
+    app.post('/upload', 
+      authMiddleware.authenticate.bind(authMiddleware),
+      upload.single('file'), 
+      (req, res, next) => {
+        if (!req.file) {
+          logger.warn('⚠️ [Routes] File upload attempted without file', { 
+            correlationId: req.correlationId 
+          });
+          return res.status(400).json({
+            success: false,
+            error: {
+              code: 'FILE_REQUIRED',
+              message: 'No file uploaded'
+            }
+          });
+        }
+
+        const fileUrl = req.file.location || 
+          `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+
+        logger.info('✅ [Routes] File uploaded successfully', {
+          correlationId: req.correlationId,
+          fileName: req.file.originalname,
+          fileSize: req.file.size,
+          fileType: req.file.mimetype,
+          fileUrl: fileUrl
         });
-        return res.status(400).json({
-          success: false,
-          error: {
-            code: 'FILE_REQUIRED',
-            message: 'No file uploaded'
-          }
+
+        res.json({
+          success: true,
+          fileUrl,
+          fileName: req.file.originalname,
+          fileSize: req.file.size,
+          fileType: req.file.mimetype
         });
       }
-
-      const fileUrl = req.file.location || 
-        `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
-
-      logger.info('✅ [Routes] File uploaded successfully', {
-        correlationId: req.correlationId,
-        fileName: req.file.originalname,
-        fileSize: req.file.size,
-        fileType: req.file.mimetype,
-        fileUrl: fileUrl
+    );
+    
+    logger.info('✅ [Routes] File upload routes configured', {
+      endpoints: ['/upload']
+    });
+  } catch (error) {
+    logger.warn('⚠️ [Routes] File upload service not available', {
+      error: error.message
+    });
+    
+    // Setup a fallback route that returns an error
+    app.post('/upload', (req, res) => {
+      res.status(503).json({
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'File upload service is not configured'
+        }
       });
-
-      res.json({
-        success: true,
-        fileUrl,
-        fileName: req.file.originalname,
-        fileSize: req.file.size,
-        fileType: req.file.mimetype
-      });
-    }
-  );
-  
-  logger.info('✅ [Routes] File upload routes configured', {
-    endpoints: ['/upload']
-  });
+    });
+  }
 }
 
 function setupNotificationRoutes(app) {
   logger.info('🔧 [Routes] Setting up notification routes...');
   
-  const authMiddleware = require('../../middleware/authentication');
-  const notificationManager = require('../../services/notifications/notificationManager');
-  
-  app.post('/api/v1/notifications/send',
-    authMiddleware.authenticate.bind(authMiddleware),
-    authMiddleware.authorize('admin'),
-    async (req, res, next) => {
-      try {
-        const { userId, title, body, data } = req.body;
-        
-        if (!userId || !title) {
-          logger.warn('⚠️ [Routes] Invalid notification request', {
-            missingFields: !userId ? 'userId' : 'title',
+  try {
+    const authMiddleware = require('../../middleware/authentication');
+    const notificationService = require('../../services/notifications/notificationService');
+    
+    // Send single notification (admin only)
+    app.post('/api/v1/notifications/send',
+      authMiddleware.authenticate.bind(authMiddleware),
+      authMiddleware.authorize('admin'),
+      async (req, res, next) => {
+        try {
+          const { userId, title, body, data, eventId } = req.body;
+          
+          if (!userId || !title) {
+            logger.warn('⚠️ [Routes] Invalid notification request', {
+              missingFields: !userId ? 'userId' : 'title',
+              correlationId: req.correlationId
+            });
+            
+            return res.status(400).json({
+              success: false,
+              error: {
+                code: 'INVALID_REQUEST',
+                message: 'userId and title are required'
+              }
+            });
+          }
+
+          // Use the new notification service
+          const result = await notificationService.sendNotification(userId, {
+            type: eventId || 'admin_notification',
+            title,
+            body,
+            data: data || {}
+          });
+
+          logger.info('✅ [Routes] Notification sent successfully', {
+            userId,
+            title,
+            correlationId: req.correlationId,
+            success: result.success
+          });
+
+          res.json({
+            success: true,
+            result
+          });
+        } catch (error) {
+          logger.error('❌ [Routes] Failed to send notification', {
+            error: error.message,
             correlationId: req.correlationId
           });
-          
-          return res.status(400).json({
-            success: false,
-            error: {
-              code: 'INVALID_REQUEST',
-              message: 'userId and title are required'
-            }
-          });
+          next(error);
         }
-
-        const result = await notificationManager.sendNotification(userId, {
-          type: 'admin_notification',
-          title,
-          body,
-          data
-        });
-
-        logger.info('✅ [Routes] Notification sent successfully', {
-          userId,
-          title,
-          correlationId: req.correlationId
-        });
-
-        res.json({
-          success: true,
-          result
-        });
-      } catch (error) {
-        logger.error('❌ [Routes] Failed to send notification', {
-          error: error.message,
-          correlationId: req.correlationId
-        });
-        next(error);
       }
-    }
-  );
+    );
 
-  app.post('/api/v1/notifications/batch',
-    authMiddleware.authenticate.bind(authMiddleware),
-    authMiddleware.authorize('admin'),
-    async (req, res, next) => {
-      try {
-        const { notifications } = req.body;
-        
-        if (!Array.isArray(notifications) || notifications.length === 0) {
-          logger.warn('⚠️ [Routes] Invalid batch notification request', {
+    // Send batch notifications (admin only)
+    app.post('/api/v1/notifications/batch',
+      authMiddleware.authenticate.bind(authMiddleware),
+      authMiddleware.authorize('admin'),
+      async (req, res, next) => {
+        try {
+          const { notifications } = req.body;
+          
+          if (!Array.isArray(notifications) || notifications.length === 0) {
+            logger.warn('⚠️ [Routes] Invalid batch notification request', {
+              correlationId: req.correlationId
+            });
+            
+            return res.status(400).json({
+              success: false,
+              error: {
+                code: 'INVALID_REQUEST',
+                message: 'notifications array is required'
+              }
+            });
+          }
+
+          const results = [];
+          
+          // Process each notification individually since we don't have batch method
+          for (const notification of notifications) {
+            try {
+              const result = await notificationService.sendNotification(
+                notification.userId, 
+                {
+                  type: notification.eventId || notification.type || 'admin_notification',
+                  title: notification.title,
+                  body: notification.body,
+                  data: notification.data || {}
+                }
+              );
+              
+              results.push({
+                userId: notification.userId,
+                success: result.success,
+                operationId: result.operationId
+              });
+            } catch (error) {
+              results.push({
+                userId: notification.userId,
+                success: false,
+                error: error.message
+              });
+            }
+          }
+
+          const successful = results.filter(r => r.success).length;
+          const failed = results.filter(r => !r.success).length;
+
+          logger.info('✅ [Routes] Batch notifications processed', {
+            total: notifications.length,
+            successful,
+            failed,
             correlationId: req.correlationId
           });
-          
-          return res.status(400).json({
-            success: false,
-            error: {
-              code: 'INVALID_REQUEST',
-              message: 'notifications array is required'
-            }
+
+          res.json({
+            success: successful > 0,
+            total: notifications.length,
+            successful,
+            failed,
+            results
           });
+        } catch (error) {
+          logger.error('❌ [Routes] Failed to send batch notifications', {
+            error: error.message,
+            correlationId: req.correlationId
+          });
+          next(error);
         }
-
-        const results = await notificationManager.batchSendNotifications(notifications);
-
-        logger.info('✅ [Routes] Batch notifications sent', {
-          count: notifications.length,
-          correlationId: req.correlationId
-        });
-
-        res.json({
-          success: true,
-          results
-        });
-      } catch (error) {
-        logger.error('❌ [Routes] Failed to send batch notifications', {
-          error: error.message,
-          correlationId: req.correlationId
-        });
-        next(error);
       }
-    }
-  );
-  
-  logger.info('✅ [Routes] Notification routes configured', {
-    endpoints: ['/api/v1/notifications/send', '/api/v1/notifications/batch']
-  });
+    );
+    
+    logger.info('✅ [Routes] Notification routes configured', {
+      endpoints: ['/api/v1/notifications/send', '/api/v1/notifications/batch']
+    });
+  } catch (error) {
+    logger.warn('⚠️ [Routes] Notification service not available', {
+      error: error.message
+    });
+    
+    // Setup fallback routes
+    app.post('/api/v1/notifications/send', (req, res) => {
+      res.status(503).json({
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'Notification service is not configured'
+        }
+      });
+    });
+    
+    app.post('/api/v1/notifications/batch', (req, res) => {
+      res.status(503).json({
+        success: false,
+        error: {
+          code: 'SERVICE_UNAVAILABLE',
+          message: 'Notification service is not configured'
+        }
+      });
+    });
+  }
 }
 
 function setupRootRoute(app) {
@@ -266,8 +348,8 @@ function setupRootRoute(app) {
       name: 'VortexHive Chat API',
       status: 'online',
       version: process.env.npm_package_version || '1.0.0',
-      environment: config.server.nodeEnv,
-      features: config.features,
+      environment: config.server?.nodeEnv || 'development',
+      features: config.features || {},
       health: `${req.protocol}://${req.get('host')}/health`
     });
   });
@@ -302,30 +384,36 @@ function setup404Handler(app) {
 function setupMetricsEndpoint(app) {
   logger.info('🔧 [Routes] Setting up metrics endpoint...');
   
-  const promClient = require('prom-client');
-  
-  app.get('/metrics', async (req, res) => {
-    try {
-      res.set('Content-Type', promClient.register.contentType);
-      res.end(await promClient.register.metrics());
-      
-      logger.debug('📊 [Routes] Metrics endpoint accessed', {
-        ip: req.ip,
-        userAgent: req.get('user-agent')
-      });
-    } catch (error) {
-      logger.error('❌ [Routes] Error generating metrics', {
-        error: error.message
-      });
-      res.status(500).json({
-        error: 'Failed to generate metrics'
-      });
-    }
-  });
-  
-  logger.info('✅ [Routes] Metrics endpoint configured', {
-    path: '/metrics'
-  });
+  try {
+    const promClient = require('prom-client');
+    
+    app.get('/metrics', async (req, res) => {
+      try {
+        res.set('Content-Type', promClient.register.contentType);
+        res.end(await promClient.register.metrics());
+        
+        logger.debug('📊 [Routes] Metrics endpoint accessed', {
+          ip: req.ip,
+          userAgent: req.get('user-agent')
+        });
+      } catch (error) {
+        logger.error('❌ [Routes] Error generating metrics', {
+          error: error.message
+        });
+        res.status(500).json({
+          error: 'Failed to generate metrics'
+        });
+      }
+    });
+    
+    logger.info('✅ [Routes] Metrics endpoint configured', {
+      path: '/metrics'
+    });
+  } catch (error) {
+    logger.warn('⚠️ [Routes] Prometheus client not available, skipping metrics endpoint', {
+      error: error.message
+    });
+  }
 }
 
 function setupWebhookRoutes(app) {
@@ -389,7 +477,7 @@ function setupClientConfigEndpoint(app) {
         
         res.json({
           serverUrl: `${req.protocol}://${req.get('host')}`,
-          socketPath: config.server.socketPath || '/socket.io',
+          socketPath: config.server?.socketPath || '/socket.io',
           apiVersion: 'v1',
           features: config.features || {}
         });
@@ -471,15 +559,23 @@ async function getHealthStatus() {
     status.status = 'warning';
   }
 
-  // Check notification services
-  const notificationManager = require('../../services/notifications/notificationManager');
-  status.services.notifications = {
-    status: notificationManager.initialized ? 'healthy' : 'unhealthy',
-    providers: notificationManager.providers ? 
-      Array.from(notificationManager.providers.keys()) : [],
-    fcm: notificationManager.providers?.has('FCM') || false,
-    apn: notificationManager.providers?.has('APN') || false
-  };
+  // Check notification services (UPDATED)
+  try {
+    const notificationService = require('../../services/notifications/notificationService');
+    status.services.notifications = {
+      status: notificationService.initialized ? 'healthy' : 'unhealthy',
+      providers: notificationService.providers ? 
+        Array.from(notificationService.providers.keys()) : [],
+      fcm: notificationService.providers?.has('FCM') || false,
+      apn: notificationService.providers?.has('APN') || false
+    };
+  } catch (error) {
+    status.services.notifications = {
+      status: 'unhealthy',
+      error: error.message
+    };
+    status.status = 'warning';
+  }
 
   return status;
 }

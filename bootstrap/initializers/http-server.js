@@ -110,14 +110,14 @@ function logEnabledFeatures() {
 
 function logServiceStatus() {
   // Fix the import path for notificationManager
-  const notificationManager = require('../../services/notifications/notificationManager');
+  const notificationService = require('../../services/notifications/notificationService');
   
   const serviceStatus = {
     database: 'connected',
     cache: config.cache?.enabled ? 'connected' : 'disabled',
-    notifications: notificationManager.initialized ? 'initialized' : 'disabled',
-    fcm: notificationManager.providers?.has('FCM') ? 'enabled' : 'disabled',
-    apn: notificationManager.providers?.has('APN') ? 'enabled' : 'disabled',
+    notifications: notificationService.initialized ? 'initialized' : 'disabled',
+    fcm: notificationService.providers?.has('FCM') ? 'enabled' : 'disabled',
+    apn: notificationService.providers?.has('APN') ? 'enabled' : 'disabled',
     email: config.email?.enabled ? 'enabled' : 'disabled',
     search: config.search?.enabled ? 'enabled' : 'disabled'
   };

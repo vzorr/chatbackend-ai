@@ -1,11 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const { Op } = require('sequelize');
-const { User, Message, Conversation, deviceTokens, DeviceToken } = require('../db/models');
+//const { User, Message, Conversation, deviceTokens, DeviceToken } = require('../db/models');
 const { authenticate } = require('../middleware/authentication');
 const { validateUUID } = require('../utils/validation');
 const logger = require('../utils/logger');
 const { getDbInstance } = require('../db/models');
+const db = require('../db/models');
 
 // Admin authorization middleware - Updated for new administrator role
 
@@ -20,6 +21,8 @@ const authorizeAdmin = async (req, res, next) => {
 // Get system stats
 router.get('/stats', authenticate, authorizeAdmin, async (req, res, next) => {
   try {
+    const { User, Message, Conversation, deviceTokens, DeviceToken  } = db;
+
     const userCount = await User.count();
     const messageCount = await Message.count();
     const conversationCount = await Conversation.count();
@@ -71,6 +74,9 @@ router.get('/stats', authenticate, authorizeAdmin, async (req, res, next) => {
 // Get all users with filtering and pagination - updated for new roles
 router.get('/users', authenticate, authorizeAdmin, async (req, res, next) => {
   try {
+
+    const { User, Message, Conversation, deviceTokens, DeviceToken  } = db;
+
     const { 
       search, 
       role, // Now accepts customer, usta, administrator
@@ -136,6 +142,9 @@ router.get('/users', authenticate, authorizeAdmin, async (req, res, next) => {
 // Update user - updated for new roles
 router.put('/users/:id', authenticate, authorizeAdmin, async (req, res, next) => {
   try {
+
+    const { User, Message, Conversation, deviceTokens, DeviceToken  } = db;
+
     const { id } = req.params;
     const { name, role, isActive } = req.body;
     
@@ -188,6 +197,8 @@ router.put('/users/:id', authenticate, authorizeAdmin, async (req, res, next) =>
 // Delete user
 router.delete('/users/:id', authenticate, authorizeAdmin, async (req, res, next) => {
   try {
+    
+    const { User, Message, Conversation, deviceTokens, DeviceToken  } = db;
     const { id } = req.params;
     
     if (!validateUUID(id)) {
@@ -215,6 +226,9 @@ router.delete('/users/:id', authenticate, authorizeAdmin, async (req, res, next)
 // Message monitoring
 router.get('/messages', authenticate, authorizeAdmin, async (req, res, next) => {
   try {
+
+    const { User, Message, Conversation, deviceTokens, DeviceToken  } = db;
+
     const { 
       conversationId, 
       userId,
@@ -285,8 +299,7 @@ router.get('/messages', authenticate, authorizeAdmin, async (req, res, next) => 
 router.get('/device-tokens', authenticate, authorizeAdmin, async (req, res, next) => {
   try {
 
-    const db = getDbInstance();
-    const { DeviceToken, User } = db;
+    const { DeviceToken, User  } = db;
 
     if (!DeviceToken) {
       throw new Error('DeviceToken model not initialized. Make sure initializeModels() was called.');

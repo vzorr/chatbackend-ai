@@ -1,11 +1,6 @@
-//use this seeder to as a way to create new seeder and seed into chat database
 'use strict';
-require('dotenv').config();
 
 const { v4: uuidv4 } = require('uuid');
-const db = require('../../db'); // your connectionManager
-const { initializeDatabase } = require('../../bootstrap/initializers/database');
-const models = require('../models'); // import the entire object
 
 const notificationTemplates = [
   // ---- CONTRACTS (Customer App) ----
@@ -294,57 +289,47 @@ const notificationTemplates = [
     "category": "system",
     "defaultEnabled": true
   }
-
-
 ];
 
-
-async function seedNotificationTemplates() {
-  try {
-    console.log('🔧 Initializing database connection...');
-    await initializeDatabase(); // 1️⃣ Connect DB
-
-    console.log('🔧 Initializing models...');
-    await models.initialize(); // 2️⃣ Correct way to initialize models
-
-    const { NotificationTemplate } = db.getModels(); // 3️⃣ Now models are ready!
-
-    console.log('🧹 Deleting all existing notification templates...');
-    await NotificationTemplate.destroy({ where: {}, truncate: true });
-
+module.exports = {
+  async up(queryInterface, Sequelize) {
+    console.log('🔧 Starting notification templates seeder...');
+    
+    // Clear existing notification templates
+    console.log('🧹 Clearing existing notification templates...');
+    await queryInterface.bulkDelete('notification_templates', null, {});
+    
+    // Insert templates one by one to handle JSON/Array types properly
+    console.log(`📝 Inserting ${notificationTemplates.length} notification templates...`);
+    
     for (const template of notificationTemplates) {
-      const [record, created] = await NotificationTemplate.findOrCreate({
-        where: {
-          appId: template.appId,
-          eventId: template.eventId
-        },
-        defaults: {
-          id: uuidv4(),
-          eventName: template.eventName,
-          title: template.title,
-          body: template.body,
-          payload: template.payload,
-          priority: template.priority,
-          category: template.category,
-          defaultEnabled: template.defaultEnabled,
-          platforms: ['ios', 'android'],
-          metaData: null
-        }
-      });
-
-      if (created) {
-        console.log(`✅ Created: [${template.appId}] ${template.eventId}`);
-      } else {
-        console.log(`⚠️ Skipped (already exists): [${template.appId}] ${template.eventId}`);
-      }
+      await queryInterface.bulkInsert('notification_templates', [{
+        id: uuidv4(),
+        appId: template.appId,
+        eventId: template.eventId,
+        eventName: template.eventName,
+        title: template.title,
+        body: template.body,
+        payload: JSON.stringify(template.payload),
+        priority: template.priority,
+        category: template.category,
+        defaultEnabled: template.defaultEnabled,
+        platforms: `{${['ios', 'android'].join(',')}}`,
+        metaData: null,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      }]);
     }
+    
+    console.log('✅ Notification templates seeder completed successfully!');
+  },
 
-    console.log('🎉 Notification templates seeding complete.');
-    process.exit(0); // Exit successfully
-  } catch (err) {
-    console.error('❌ Error seeding notification templates:', err);
-    process.exit(1); // Exit with error
+  async down(queryInterface, Sequelize) {
+    console.log('🔄 Rolling back notification templates seeder...');
+    
+    // Remove all notification templates
+    await queryInterface.bulkDelete('notification_templates', null, {});
+    
+    console.log('✅ Notification templates rollback completed!');
   }
-}
-
-seedNotificationTemplates();
+};

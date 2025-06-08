@@ -582,9 +582,132 @@ class ConversationService {
     }
   }
 
+
+
+  /**
+ * Find conversation between two users
+ * @param {string} userId1 - First user ID
+ * @param {string} userId2 - Second user ID  
+ * @param {string} jobId - Optional job ID for job-specific conversation
+ * @returns {Object|null} - Conversation object or null
+ */
+async findDirectConversation(userId1, userId2, jobId = null) {
+  try {
+    await this.ensureDbInitialized();
+    
+    const models = db.getModels();
+    const { Conversation } = models;
+    
+    if (!Conversation) {
+      logger.error('Conversation model not found');
+      return null;
+    }
+    
+    // ✅ STEP 1: Build base query for conversations containing both users
+    const baseWhere = {
+      participantIds: {
+        [Op.contains]: [userId1, userId2]
+      },
+      deleted: false // Only active conversations
+    };
+    
+    // ✅ STEP 2: Add jobId filter if provided
+    if (jobId) {
+      baseWhere.jobId = jobId;
+      // For job conversations, also ensure type is job_chat
+      baseWhere.type = 'job_chat';
+    } else {
+      // For direct messages, ensure no jobId and type is direct_message
+      baseWhere.jobId = null;
+      baseWhere.type = 'direct_message';
+    }
+    
+    logger.info('Finding conversation with criteria:', {
+      userId1,
+      userId2, 
+      jobId,
+      queryWhere: baseWhere
+    });
+    
+    // ✅ STEP 3: Find conversations matching criteria
+    const conversations = await Conversation.findAll({
+      where: baseWhere,
+      order: [['lastMessageAt', 'DESC']] // Most recent first
+    });
+    
+    // ✅ STEP 4: Filter for exact participant match (only 2 participants)
+    const exactConversation = conversations.find(c => 
+      c.participantIds.length === 2 &&
+      c.participantIds.includes(userId1) &&
+      c.participantIds.includes(userId2)
+    );
+    
+    if (exactConversation) {
+      logger.info('Found existing conversation:', {
+        conversationId: exactConversation.id,
+        type: exactConversation.type,
+        jobId: exactConversation.jobId,
+        participantCount: exactConversation.participantIds.length
+      });
+      
+      return exactConversation;
+    }
+    
+    // ✅ STEP 5: If jobId provided but no exact match, try fallback logic
+    if (jobId) {
+      logger.info('No exact job conversation found, checking for similar conversations');
+      
+      // Look for any conversation with these users for this job
+      // (might have more participants - group job chat)
+      const jobConversations = await Conversation.findAll({
+        where: {
+          jobId: jobId,
+          type: 'job_chat',
+          participantIds: {
+            [Op.contains]: [userId1, userId2]
+          },
+          deleted: false
+        },
+        order: [['lastMessageAt', 'DESC']]
+      });
+      
+      // Log what we found for debugging
+      if (jobConversations.length > 0) {
+        logger.info('Found related job conversations:', {
+          count: jobConversations.length,
+          conversations: jobConversations.map(c => ({
+            id: c.id,
+            participantCount: c.participantIds.length,
+            participants: c.participantIds
+          }))
+        });
+      }
+      
+      // Could return the most recent job conversation even if it has more participants
+      // or return null to force creation of new 2-person conversation
+      // For now, return null to create new conversation
+      return null;
+    }
+    
+    logger.info('No conversation found matching criteria');
+    return null;
+    
+  } catch (error) {
+    logger.error('Error finding direct conversation', {
+      userId1,
+      userId2,
+      jobId,
+      error: error.message,
+      stack: error.stack
+    });
+    return null;
+  }
+}
+
   /**
    * Check if a direct conversation exists between two users
    */
+  /*
   async findDirectConversation(userId1, userId2) {
     try {
       await this.ensureDbInitialized();
@@ -624,7 +747,7 @@ class ConversationService {
       return null;
     }
   }
-
+*/
   /**
    * Get conversation messages
    */
