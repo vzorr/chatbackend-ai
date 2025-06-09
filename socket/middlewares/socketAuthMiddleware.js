@@ -1,7 +1,6 @@
 // socket/middlewares/socketAuthMiddleware.js
 const jwt = require('jsonwebtoken');
 const UserService = require('../../services/userService');
-const userSyncService = require('../../services/sync/userSyncService');
 const logger = require('../../utils/logger');
 const { validateUUID } = require('../../utils/validation');
 
@@ -25,31 +24,15 @@ const socketAuthMiddleware = async (socket, next) => {
       return next(new Error('Invalid user identifier format'));
     }
 
-    let user = await UserService.findByExternalId(externalId);
+    // Only look for existing users - no syncing
+    const user = await UserService.findByExternalId(externalId);
 
     if (!user) {
-      logger.warn(`[Socket ID: ${socket.id}] User not found, attempting sync`, { externalId });
-
-      const syncData = {
-        appUserId: externalId,
-        name: decoded.name || decoded.displayName,
-        email: decoded.email,
-        phone: decoded.phone,
-        avatar: decoded.avatar || decoded.picture,
-        role: decoded.role || 'client',
-        ...decoded.userData
-      };
-
-      try {
-        const syncResult = await userSyncService.syncUserFromMainApp(syncData, token);
-        user = await UserService.findById(syncResult.user.id);
-        logger.info(`[Socket ID: ${socket.id}] User synced successfully`, { userId: user.id, externalId });
-      } catch (syncError) {
-        logger.error(`[Socket ID: ${socket.id}] User sync failed`, { error: syncError, externalId });
-        return next(new Error('Failed to sync user'));
-      }
+      logger.warn(`[Socket ID: ${socket.id}] User not found in chat system`, { externalId });
+      return next(new Error('User not found in chat system'));
     }
 
+    // Set socket user data
     socket.user = user;
     socket.token = token;
     socket.tokenData = decoded;

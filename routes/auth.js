@@ -1,4 +1,4 @@
-// routes/auth.js - CLEAN APPROACH
+// routes/auth.js - NO USER SYNCING VERSION
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const jwt = require('jsonwebtoken');
@@ -12,7 +12,6 @@ const authMiddleware = require('../middleware/authentication');
 // ✅ BETTER: Direct import from exception handler
 const { asyncHandler, createOperationalError, createSystemError } = require('../middleware/exceptionHandler');
 
-const userSyncService = require('../services/sync/userSyncService');
 const notificationService = require('../services/notifications/notificationService');
 
 // Debug route to verify router is working
@@ -88,101 +87,6 @@ router.get('/debug-token', asyncHandler(async (req, res) => {
     throw createOperationalError('Invalid token', 401, 'INVALID_TOKEN');
   }
 }));
-
-/**
- * @route POST /api/v1/auth/sync
- * @desc Sync user from main application
- * @access Service-to-Service (API Key)
- */
-router.post('/sync', 
-  (req, res, next) => {
-    logger.info('Route hit: /api/v1/auth/sync', {
-      method: req.method,
-      path: req.path,
-      baseUrl: req.baseUrl,
-      originalUrl: req.originalUrl,
-      headers: Object.keys(req.headers)
-    });
-    next();
-  },
-  authMiddleware.authenticateApiKey.bind(authMiddleware),
-  asyncHandler(async (req, res) => {
-    logger.info('API Key authentication passed for /sync route');
-    const { userData, authToken, signature } = req.body;
-    
-    if (!userData) {
-      throw createOperationalError('User data is required', 400, 'MISSING_USER_DATA');
-    }
-    
-    if (!signature) {
-      throw createOperationalError('Request signature is required', 400, 'MISSING_SIGNATURE');
-    }
-    
-    try {
-      // Validate request signature
-      userSyncService.validateSyncRequest(userData, signature);
-      
-      // Perform sync
-      const result = await userSyncService.syncUserFromMainApp(userData, authToken);
-      
-      // Log audit
-      logger.audit('user_sync', {
-        userId: result.user.id,
-        externalId: result.user.externalId,
-        source: 'main_app',
-        ip: req.ip
-      });
-      
-      res.json(result);
-    } catch (error) {
-      if (error.code === 'INVALID_SIGNATURE') {
-        throw createOperationalError('Invalid request signature', 403, 'INVALID_SIGNATURE');
-      }
-      throw createSystemError('User sync failed', error);
-    }
-  })
-);
-
-/**
- * @route POST /api/v1/auth/batch-sync
- * @desc Batch sync multiple users
- * @access Service-to-Service (API Key)
- */
-router.post('/batch-sync',
-  (req, res, next) => {
-    logger.info('Route hit: /api/v1/auth/batch-sync', {
-      method: req.method,
-      path: req.path,
-      baseUrl: req.baseUrl,
-      originalUrl: req.originalUrl
-    });
-    next();
-  },
-  authMiddleware.authenticateApiKey.bind(authMiddleware),
-  asyncHandler(async (req, res) => {
-    logger.info('API Key authentication passed for /batch-sync route');
-    const { users, authToken } = req.body;
-    
-    if (!Array.isArray(users) || users.length === 0) {
-      throw createOperationalError('Users array is required', 400, 'INVALID_USERS_ARRAY');
-    }
-    
-    try {
-      const result = await userSyncService.batchSyncUsers(users, authToken);
-      
-      logger.audit('batch_user_sync', {
-        count: users.length,
-        successful: result.summary.successful,
-        failed: result.summary.failed,
-        ip: req.ip
-      });
-      
-      res.json(result);
-    } catch (error) {
-      throw createSystemError('Batch sync failed', error);
-    }
-  })
-);
 
 /**
  * @route POST /api/v1/auth/register-device
@@ -275,69 +179,13 @@ router.post('/register-device',
       throw createSystemError('Database error during user lookup', dbError);
     }
     
-    // If user not found, create one
+    // If user not found, return error (no more syncing)
     if (!user) {
-      logger.warn('User not found in database, creating new user', {
+      logger.warn('User not found in chat system', {
         userId,
         externalId: decoded.externalId || userId
       });
-      
-      try {
-        // Normalize role to match database ENUM
-        let role = 'customer'; // Default
-        if (decoded.role) {
-          const normalizedRole = decoded.role.toLowerCase();
-          if (['customer', 'usta', 'administrator'].includes(normalizedRole)) {
-            role = normalizedRole;
-          } else if (normalizedRole === 'admin') {
-            role = 'administrator';
-          }
-        }
-        
-        // Create new user
-        user = await User.create({
-          id: userId,
-          externalId: decoded.externalId || userId,
-          name: decoded.name || decoded.displayName || 'User',
-          phone: decoded.phone || '+00000000000',
-          email: decoded.email || null,
-          role: role,
-          isOnline: true,
-          lastSeen: new Date(),
-          metaData: {
-            source: 'device_registration',
-            createdAt: new Date().toISOString(),
-            tokenData: {
-              iat: decoded.iat,
-              exp: decoded.exp,
-              role: decoded.role
-            }
-          }
-        });
-        
-        logger.info('Created new user during device registration', {
-          userId: user.id,
-          externalId: user.externalId,
-          role: user.role
-        });
-      } catch (createError) {
-        logger.error('Failed to create user during device registration', {
-          error: createError.message,
-          stack: createError.stack,
-          userId,
-          code: createError.code || 'UNKNOWN'
-        });
-        
-        if (createError.name === 'SequelizeUniqueConstraintError') {
-          throw createOperationalError('User already exists with this ID', 409, 'USER_EXISTS');
-        }
-        
-        if (createError.name === 'SequelizeValidationError') {
-          throw createOperationalError('Invalid user data', 400, 'VALIDATION_ERROR');
-        }
-        
-        throw createSystemError('Failed to create user account', createError);
-      }
+      throw createOperationalError('User not found in chat system. Please register first.', 404, 'USER_NOT_FOUND');
     }
     
     // Set user in request
@@ -591,7 +439,16 @@ router.delete('/device/:deviceId',
     const { deviceId } = req.params;
     const userId = req.user.id;
     
-    const deviceToken = await db.DeviceToken.findOne({
+    // Wait for database initialization if needed
+    if (typeof db.waitForInitialization === 'function') {
+      await db.waitForInitialization();
+    }
+    
+    const models = typeof db.getModels === 'function' ? db.getModels() : db;
+    const DeviceToken = models.DeviceToken;
+    const TokenHistory = models.TokenHistory;
+    
+    const deviceToken = await DeviceToken.findOne({
       where: { deviceId, userId }
     });
     
@@ -608,16 +465,9 @@ router.delete('/device/:deviceId',
     
     // Log revocation
     try {
-      if (db.TokenHistory.logTokenRevocation) {
-        await db.TokenHistory.logTokenRevocation({
-          userId,
-          token: deviceToken.token,
-          tokenType: deviceToken.platform === 'ios' ? 'APN' : 'FCM',
-          reason: 'user_request',
-          revokedBy: userId
-        });
-      } else {
-        await db.TokenHistory.create({
+      if (TokenHistory) {
+        await TokenHistory.create({
+          id: uuidv4(),
           userId,
           token: deviceToken.token,
           tokenType: deviceToken.platform === 'ios' ? 'APN' : 'FCM',
@@ -670,7 +520,15 @@ router.get('/devices',
     const userId = req.user.id;
     
     try {
-      const devices = await db.DeviceToken.findAll({
+      // Wait for database initialization if needed
+      if (typeof db.waitForInitialization === 'function') {
+        await db.waitForInitialization();
+      }
+      
+      const models = typeof db.getModels === 'function' ? db.getModels() : db;
+      const DeviceToken = models.DeviceToken;
+      
+      const devices = await DeviceToken.findAll({
         where: { userId, active: true },
         attributes: [
           'id', 
@@ -695,7 +553,7 @@ router.get('/devices',
 
 /**
  * @route POST /api/v1/auth/verify-token
- * @desc Verify and sync user from main app token
+ * @desc Verify token and check if user exists in chat system
  * @access Public
  */
 router.post('/verify-token',
@@ -709,7 +567,7 @@ router.post('/verify-token',
     next();
   },
   asyncHandler(async (req, res) => {
-    const { token, deviceInfo } = req.body;
+    const { token } = req.body;
     
     if (!token) {
       throw createOperationalError('Token is required', 400, 'MISSING_TOKEN');
@@ -730,46 +588,59 @@ router.post('/verify-token',
     }
     
     try {
-      // Sync user from main app
-      const syncData = {
-        appUserId: decoded.id || decoded.userId || decoded.sub,
-        name: decoded.name,
-        email: decoded.email,
-        phone: decoded.phone,
-        avatar: decoded.avatar,
-        role: decoded.role || 'client',
-        ...decoded.userData
-      };
+      // Wait for database initialization if needed
+      if (typeof db.waitForInitialization === 'function') {
+        await db.waitForInitialization();
+      }
       
-      const syncResult = await userSyncService.syncUserFromMainApp(syncData, token);
+      const models = typeof db.getModels === 'function' ? db.getModels() : db;
+      const User = models.User;
       
-      // Register device token if provided
-      if (deviceInfo && deviceInfo.token) {
-        try {
-          await userSyncService.syncDeviceToken(
-            syncResult.user.id,
-            deviceInfo,
-            {
-              ip: req.ip,
-              userAgent: req.get('user-agent')
-            }
-          );
-        } catch (error) {
-          logger.error('Device token sync failed', {
-            userId: syncResult.user.id,
-            error: error.message
-          });
-          // Continue despite device sync failure
-        }
+      const userId = decoded.id || decoded.userId || decoded.sub;
+      if (!userId) {
+        throw createOperationalError('No user ID in token', 401, 'INVALID_TOKEN_STRUCTURE');
+      }
+      
+      // Check if user exists in chat system
+      let user = await User.findByPk(userId);
+      
+      // If not found by ID, try externalId
+      if (!user && decoded.externalId) {
+        user = await User.findOne({
+          where: { externalId: decoded.externalId }
+        });
+      }
+      
+      if (!user) {
+        logger.warn('User not found in chat system during token verification', {
+          userId,
+          externalId: decoded.externalId || 'not provided'
+        });
+        
+        // Return specific response indicating user needs to register
+        return res.status(404).json({
+          success: false,
+          error: 'USER_NOT_FOUND_IN_CHAT_SYSTEM',
+          message: 'User not found in chat system. Please register first.',
+          requiresRegistration: true,
+          tokenData: {
+            id: userId,
+            externalId: decoded.externalId || userId,
+            name: decoded.name,
+            email: decoded.email,
+            phone: decoded.phone,
+            role: decoded.role
+          }
+        });
       }
       
       // Generate chat-specific token
       const chatToken = jwt.sign(
         {
-          id: syncResult.user.id,
-          externalId: syncResult.user.externalId,
-          name: syncResult.user.name,
-          role: syncResult.user.role,
+          id: user.id,
+          externalId: user.externalId,
+          name: user.name,
+          role: user.role,
           chatUser: true
         },
         process.env.JWT_SECRET,
@@ -777,8 +648,8 @@ router.post('/verify-token',
       );
       
       logger.audit('token_verification', {
-        userId: syncResult.user.id,
-        externalId: syncResult.user.externalId,
+        userId: user.id,
+        externalId: user.externalId,
         success: true,
         ip: req.ip
       });
@@ -786,8 +657,15 @@ router.post('/verify-token',
       res.json({
         success: true,
         token: chatToken,
-        user: syncResult.user,
-        operationId: syncResult.operationId
+        user: {
+          id: user.id,
+          externalId: user.externalId,
+          name: user.name,
+          email: user.email,
+          phone: user.phone,
+          role: user.role,
+          avatar: user.avatar
+        }
       });
       
     } catch (error) {
@@ -797,7 +675,11 @@ router.post('/verify-token',
         ip: req.ip
       });
       
-      throw createSystemError('User sync failed during token verification', error);
+      if (error.isOperational) {
+        throw error;
+      }
+      
+      throw createSystemError('Token verification failed', error);
     }
   })
 );
@@ -822,7 +704,15 @@ router.get('/profile',
     const userId = req.user.id;
     
     try {
-      const user = await db.User.findByPk(userId, {
+      // Wait for database initialization if needed
+      if (typeof db.waitForInitialization === 'function') {
+        await db.waitForInitialization();
+      }
+      
+      const models = typeof db.getModels === 'function' ? db.getModels() : db;
+      const User = models.User;
+      
+      const user = await User.findByPk(userId, {
         attributes: [
           'id',
           'externalId',
@@ -874,6 +764,15 @@ router.post('/token-history',
   asyncHandler(async (req, res) => {
     const { userId, deviceId, startDate, endDate, limit = 50 } = req.body;
     
+    // Wait for database initialization if needed
+    if (typeof db.waitForInitialization === 'function') {
+      await db.waitForInitialization();
+    }
+    
+    const models = typeof db.getModels === 'function' ? db.getModels() : db;
+    const TokenHistory = models.TokenHistory;
+    const User = models.User;
+    
     const where = {};
     
     if (userId) {
@@ -895,11 +794,11 @@ router.post('/token-history',
     }
     
     try {
-      const history = await db.TokenHistory.findAll({
+      const history = await TokenHistory.findAll({
         where,
         include: [
           {
-            model: db.User,
+            model: User,
             as: 'user',
             attributes: ['id', 'name', 'externalId']
           }
@@ -1007,7 +906,6 @@ router.get('/whoami',
     });
   })
 );
-
 
 /**
  * @route POST /api/v1/auth/register-user
@@ -1297,6 +1195,5 @@ router.post('/register-user',
     }
   })
 );
-
 
 module.exports = router;

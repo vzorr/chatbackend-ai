@@ -291,31 +291,77 @@ const updateUserPresence = async (userId, isOnline, socketId = null) => {
   }
 }
 
-// Typing indicator functions
-const setUserTyping = async (userId, conversationId) => {
-  const key = KEY_PREFIXES.TYPING_STATUS + conversationId;
-  await redisClient.hset(key, userId, Date.now());
-  await redisClient.expire(key, TTL.TYPING_STATUS);
-  return true;
+// Typing indicator functions - UPDATED
+const setUserTyping = async (userId, conversationId, ttlMs = 3000) => {
+  try {
+    const key = KEY_PREFIXES.TYPING_STATUS + conversationId;
+    await redisClient.hset(key, userId, Date.now());
+    await redisClient.expire(key, Math.ceil(ttlMs / 1000));
+    logger.debug(`Set typing status for user ${userId} in conversation ${conversationId}`);
+    return true;
+  } catch (error) {
+    logger.error('Error setting user typing status', {
+      userId,
+      conversationId,
+      error: error.message
+    });
+    return false;
+  }
+};
+
+const removeUserTyping = async (userId, conversationId) => {
+  try {
+    const key = KEY_PREFIXES.TYPING_STATUS + conversationId;
+    await redisClient.hdel(key, userId);
+    logger.debug(`Removed typing status for user ${userId} in conversation ${conversationId}`);
+    return true;
+  } catch (error) {
+    logger.error('Error removing user typing status', {
+      userId,
+      conversationId,
+      error: error.message
+    });
+    return false;
+  }
 };
 
 const getUsersTyping = async (conversationId) => {
-  const key = KEY_PREFIXES.TYPING_STATUS + conversationId;
-  const data = await redisClient.hgetall(key);
-  
-  if (!data) return [];
-  
-  const typingUsers = [];
-  const now = Date.now();
-  
-  Object.entries(data).forEach(([userId, timestamp]) => {
-    // Consider only users who typed in the last 5 seconds
-    if (now - parseInt(timestamp) < 5000) {
-      typingUsers.push(userId);
+  try {
+    const key = KEY_PREFIXES.TYPING_STATUS + conversationId;
+    const data = await redisClient.hgetall(key);
+    
+    if (!data || Object.keys(data).length === 0) {
+      return [];
     }
-  });
-  
-  return typingUsers;
+    
+    const typingUsers = [];
+    const expiredUsers = [];
+    const now = Date.now();
+    
+    // Check for expired typing sessions (older than 5 seconds)
+    Object.entries(data).forEach(([userId, timestamp]) => {
+      const age = now - parseInt(timestamp);
+      if (age < 5000) {
+        typingUsers.push(userId);
+      } else {
+        expiredUsers.push(userId);
+      }
+    });
+    
+    // Clean up expired users
+    if (expiredUsers.length > 0) {
+      await redisClient.hdel(key, ...expiredUsers);
+    }
+    
+    logger.debug(`Found ${typingUsers.length} users typing in conversation ${conversationId}`);
+    return typingUsers;
+  } catch (error) {
+    logger.error('Error getting users typing', {
+      conversationId,
+      error: error.message
+    });
+    return [];
+  }
 };
 
 // Unread messages count
@@ -356,7 +402,6 @@ const ping = async () => {
   }
 };
 
-
 const getOnlineUsers = async () => {
   try {
     // Get all user presence keys
@@ -396,8 +441,6 @@ const getOnlineUsers = async () => {
   }
 };
 
-
-
 module.exports = {
   redisClient,
   setUserOnline,
@@ -411,6 +454,7 @@ module.exports = {
   getMessage,
   getConversationMessages,
   setUserTyping,
+  removeUserTyping,
   getUsersTyping,
   incrementUnreadCount,
   resetUnreadCount,
@@ -420,5 +464,5 @@ module.exports = {
   TTL,
   updateUserPresence,
   isUserStillOnline,
-   getOnlineUsers,
+  getOnlineUsers,
 };

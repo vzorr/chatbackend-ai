@@ -35,6 +35,12 @@ async handleSendMessage(io, socket, payload) {
   let targetConversationId = conversationId;
 
   try {
+    // ✅ ENSURE DB INITIALIZATION
+    if (!db.isInitialized()) {
+      logger.info('Database not initialized, waiting...');
+      await db.waitForInitialization();
+    }
+
     const models = db.getModels();
     const { Message, MessageVersion, Conversation, ConversationParticipant } = models;
 
@@ -52,6 +58,7 @@ async handleSendMessage(io, socket, payload) {
       });
 
       // ✅ STEP 1: Try to find existing conversation using enhanced method
+      const conversationService = require('./conversationService');
       const existingConversation = await conversationService.findDirectConversation(
         userId, 
         receiverId, 
@@ -147,14 +154,48 @@ async handleSendMessage(io, socket, payload) {
       deleted: messageData.deleted
     });
 
-    // ✅ TRANSACTION: Wrap database operations in transaction for consistency
-    const transaction = await db.sequelize.transaction();
+    // ✅ TRANSACTION: Wrap database operations in transaction for consistency  
+    let transaction;
+    try {
+      // Try multiple ways to get sequelize instance
+      let sequelizeInstance = null;
+      if (models.sequelize) {
+        sequelizeInstance = models.sequelize;
+      } else if (models.Message.sequelize) {
+        sequelizeInstance = models.Message.sequelize;
+      } else if (db.sequelize) {
+        sequelizeInstance = db.sequelize;
+      } else {
+        // Fallback: create transaction without explicit sequelize reference
+        logger.warn('Using fallback transaction method - no sequelize instance found');
+        transaction = null;
+      }
+      
+      if (sequelizeInstance) {
+        transaction = await sequelizeInstance.transaction();
+        console.log('✅ Transaction created successfully');
+      } else {
+        console.log('⚠️ Proceeding without transaction');
+      }
+      
+    } catch (transactionError) {
+      logger.error('Failed to create transaction', {
+        error: transactionError.message,
+        stack: transactionError.stack
+      });
+      // Continue without transaction but log the issue
+      transaction = null;
+      console.log('⚠️ Transaction creation failed, proceeding without transaction');
+    }
     
     try {
       // Create message in database
-      const message = await Message.create(messageData, { transaction });
+      const createOptions = transaction ? { transaction } : {};
+      const message = await Message.create(messageData, createOptions);
+      console.log('✅ Message created in database:', message.id);
       
       // Update conversation last message timestamp
+      const updateOptions = transaction ? { transaction } : {};
       await Conversation.update(
         { 
           lastMessageAt: new Date(),
@@ -163,11 +204,13 @@ async handleSendMessage(io, socket, payload) {
         },
         { 
           where: { id: targetConversationId },
-          transaction
+          ...updateOptions
         }
       );
+      console.log('✅ Conversation updated with last message time');
 
       // ✅ ENHANCED: Better unread count management
+      const incrementOptions = transaction ? { transaction } : {};
       const unreadUpdateResult = await ConversationParticipant.increment(
         'unreadCount',
         { 
@@ -176,14 +219,17 @@ async handleSendMessage(io, socket, payload) {
             userId: { [Op.ne]: userId },
             leftAt: null // ✅ Only increment for active participants
           },
-          transaction
+          ...incrementOptions
         }
       );
 
       console.log('📊 Updated unread counts for participants:', unreadUpdateResult);
 
-      // Commit transaction
-      await transaction.commit();
+      // Commit transaction if it exists
+      if (transaction) {
+        await transaction.commit();
+        console.log('✅ Transaction committed successfully');
+      }
       
       // ✅ Queue for additional processing (notifications, etc.)
       await queueService.enqueueMessage({
@@ -238,8 +284,11 @@ async handleSendMessage(io, socket, payload) {
       };
 
     } catch (dbError) {
-      // Rollback transaction on database error
-      await transaction.rollback();
+      // Rollback transaction on database error if it exists
+      if (transaction) {
+        await transaction.rollback();
+        console.log('🔄 Transaction rolled back due to error');
+      }
       throw dbError;
     }
 

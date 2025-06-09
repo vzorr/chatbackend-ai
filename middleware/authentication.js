@@ -1,8 +1,7 @@
-// middleware/authentication.js
+// middleware/authentication.js - NO USER SYNCING VERSION
 const jwt = require('jsonwebtoken');
 const logger = require('../utils/logger');
 const { validateUUID } = require('../utils/validation');
-const userSyncService = require('../services/sync/userSyncService');
 const UserService = require('../services/userService');
 
 class AuthenticationMiddleware {
@@ -24,8 +23,8 @@ class AuthenticationMiddleware {
         userAgent: req.get('user-agent')
       });
 
-      const user = await this.getOrSyncUser(decoded, token, req);
-      if (!user) return this.sendUnauthorizedResponse(res, 'User not found');
+      const user = await this.getUser(decoded, req);
+      if (!user) return this.sendUnauthorizedResponse(res, 'User not found in chat system');
 
       req.user = user;
       req.authToken = token;
@@ -78,57 +77,33 @@ class AuthenticationMiddleware {
     }
   }
 
-  async getOrSyncUser(tokenData, token, req) {
+  async getUser(tokenData, req) {
     const externalId = tokenData.id || tokenData.userId || tokenData.sub;
     if (!validateUUID(externalId)) throw new Error('Invalid user identifier format');
 
+    // Only look for existing users - no syncing
     let user = await UserService.findByExternalId(externalId);
 
-    // Validate and normalize role if present in tokenData
-    if (tokenData.role && !['customer', 'usta', 'administrator'].includes(tokenData.role.toLowerCase())) {
-      logger.warn('Invalid role detected in token - will be normalized during sync', {
-        role: tokenData.role,
+    // If not found by externalId, try by ID
+    if (!user) {
+      user = await UserService.findById(externalId);
+    }
+
+    if (!user) {
+      logger.warn('User not found in chat system during authentication', {
         externalId,
         requestId: req.id
       });
-      // Let userSyncService handle role normalization
+      return null;
     }
 
-    if (!user || this.shouldSyncUser(user, tokenData)) {
-      const syncData = {
-        appUserId: externalId,
-        name: tokenData.name || tokenData.displayName,
-        email: tokenData.email,
-        phone: tokenData.phone,
-        avatar: tokenData.avatar || tokenData.picture,
-        role: tokenData.role || 'customer', // Default to customer; will be normalized by sync service
-        ...tokenData.userData
-      };
-
-      try {
-        const syncResult = await userSyncService.syncUserFromMainApp(syncData, token);
-        user = await UserService.findById(syncResult.user.id);
-
-        logger.info('User synced from main app', { userId: user.id, externalId: user.externalId, requestId: req.id });
-      } catch (syncError) {
-        logger.error('User sync failed', { error: syncError, externalId, requestId: req.id });
-        if (user) {
-          logger.warn('Using existing user data after sync failure', { userId: user.id, externalId });
-        } else {
-          throw new Error('Failed to sync user from main application');
-        }
-      }
-    }
+    logger.debug('User found for authentication', {
+      userId: user.id,
+      externalId: user.externalId,
+      requestId: req.id
+    });
 
     return user;
-  }
-
-  shouldSyncUser(user, tokenData) {
-    if (tokenData.forceSync) return true;
-    const lastSync = user.metaData?.lastSyncAt;
-    if (!lastSync) return true;
-    const syncInterval = parseInt(process.env.USER_SYNC_INTERVAL || '3600000');
-    return Date.now() - new Date(lastSync).getTime() > syncInterval;
   }
 
   handleAuthError(error, res, requestId) {
@@ -157,7 +132,7 @@ class AuthenticationMiddleware {
       'INVALID_TOKEN': 'Invalid authentication token',
       'NO_TOKEN': 'No authentication token provided',
       'INVALID_USER': 'User account not found',
-      'SYNC_FAILED': 'Failed to sync user data'
+      'USER_NOT_FOUND': 'User not found in chat system'
     };
     return messages[error.code] || 'Authentication failed';
   }
