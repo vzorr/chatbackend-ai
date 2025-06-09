@@ -1,83 +1,149 @@
-// db/models/notification-log.js
 module.exports = (sequelize, DataTypes) => {
-    const NotificationLog = sequelize.define('NotificationLog', {
-      id: {
-        type: DataTypes.UUID,
-        defaultValue: DataTypes.UUIDV4,
-        primaryKey: true
+  const NotificationLog = sequelize.define('NotificationLog', {
+    id: {
+      type: DataTypes.UUID,
+      defaultValue: DataTypes.UUIDV4,
+      primaryKey: true
+    },
+    recipientId: {
+      type: DataTypes.UUID,
+      allowNull: false,
+      field: 'recipient_id'
+    },
+    triggeredBy: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      field: 'triggered_by'
+    },
+    eventId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      field: 'event_id'
+    },
+    templateId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      field: 'template_id'
+    },
+    categoryId: {
+      type: DataTypes.UUID, // ✅ CHANGED: Was INTEGER, now UUID
+      allowNull: true,
+      field: 'category_id'
+    },
+    businessEntityType: {
+      type: DataTypes.STRING(50),
+      allowNull: true,
+      field: 'business_entity_type'
+    },
+    businessEntityId: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+      field: 'business_entity_id'
+    },
+    deviceToken: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      field: 'device_token'
+    },
+    appId: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      field: 'app_id'
+    },
+    title: {
+      type: DataTypes.STRING,
+      allowNull: false
+    },
+    body: {
+      type: DataTypes.TEXT,
+      allowNull: false
+    },
+    payload: {
+      type: DataTypes.JSON,
+      allowNull: true
+    },
+    status: {
+      type: DataTypes.ENUM('queued', 'processing', 'sent', 'delivered', 'failed'),
+      defaultValue: 'queued'
+    },
+    channel: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      defaultValue: 'push'
+    },
+    platform: {
+      type: DataTypes.STRING,
+      allowNull: true
+    },
+    errorDetails: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      field: 'error_details'
+    },
+    sentAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: 'sent_at'
+    },
+    deliveredAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: 'delivered_at'
+    },
+    readAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: 'read_at'
+    }
+  }, {
+    tableName: 'notification_logs',
+    timestamps: true,
+    underscored: true,
+    indexes: [
+      {
+        fields: ['recipient_id', 'created_at']
       },
-      userId: {
-        type: DataTypes.UUID,
-        allowNull: false
+      {
+        fields: ['recipient_id', 'category_id']
       },
-      deviceToken: {
-        type: DataTypes.TEXT,
-        allowNull: true
+      {
+        fields: ['event_id']
       },
-      eventId: {
-        type: DataTypes.STRING,
-        allowNull: false
+      {
+        fields: ['template_id']
       },
-      appId: {
-        type: DataTypes.STRING,
-        allowNull: false
+      {
+        fields: ['triggered_by']
       },
-      title: {
-        type: DataTypes.STRING,
-        allowNull: false
+      {
+        fields: ['business_entity_type', 'business_entity_id']
       },
-      body: {
-        type: DataTypes.TEXT,
-        allowNull: false
+      {
+        fields: ['recipient_id', 'read_at']
       },
-      payload: {
-        type: DataTypes.JSON,
-        allowNull: true
+      {
+        fields: ['status']
       },
-      status: {
-        type: DataTypes.ENUM('queued', 'sent', 'delivered', 'failed'),
-        defaultValue: 'queued'
-      },
-      channel: {
-        type: DataTypes.STRING,
-        allowNull: false,
-        defaultValue: 'push'
-      },
-      platform: {
-        type: DataTypes.STRING,
-        allowNull: true
-      },
-      errorDetails: {
-        type: DataTypes.JSON,
-        allowNull: true
-      },
-      sentAt: {
-        type: DataTypes.DATE,
-        allowNull: true
-      },
-      deliveredAt: {
-        type: DataTypes.DATE,
-        allowNull: true
-      },
-      readAt: {
-        type: DataTypes.DATE,
-        allowNull: true
+      {
+        fields: ['app_id']
       }
-    }, {
-      tableName: 'notification_logs',
-      timestamps: true,
-      indexes: [
-        {
-          fields: ['userId', 'createdAt']
-        },
-        {
-          fields: ['eventId']
-        },
-        {
-          fields: ['status']
-        }
-      ]
+    ]
+  });
+
+  NotificationLog.associate = function(models) {
+    NotificationLog.belongsTo(models.NotificationEvent, {
+      foreignKey: 'eventId',
+      as: 'event'
     });
-  
-    return NotificationLog;
+    NotificationLog.belongsTo(models.NotificationTemplate, {
+      foreignKey: 'templateId',
+      as: 'template'
+    });
+    NotificationLog.belongsTo(models.NotificationCategory, {
+      foreignKey: 'categoryId',
+      as: 'category'
+    });
   };
+
+  return NotificationLog;
+};
