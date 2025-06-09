@@ -9,11 +9,7 @@ module.exports = {
       // === STEP 1: NUCLEAR OPTION - DROP EVERYTHING ===
       console.log('\n💥 STEP 1: Nuclear cleanup - dropping all tables...');
       
-      // Disable foreign key checks
-      await queryInterface.sequelize.query('SET session_replication_role = replica;').catch(() => {
-        return queryInterface.sequelize.query('SET foreign_key_checks = 0;');
-      });
-
+      // PostgreSQL: No need to disable foreign key checks, CASCADE handles it
       const tablesToDrop = [
         'notification_logs',
         'notification_preferences', 
@@ -48,11 +44,6 @@ module.exports = {
           console.log(`⚠️ ENUM ${enumName} doesn't exist`);
         }
       }
-
-      // Re-enable foreign key checks
-      await queryInterface.sequelize.query('SET session_replication_role = DEFAULT;').catch(() => {
-        return queryInterface.sequelize.query('SET foreign_key_checks = 1;');
-      });
 
       console.log('✅ Nuclear cleanup completed');
 
