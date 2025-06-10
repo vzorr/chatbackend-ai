@@ -109,7 +109,7 @@ function logEnabledFeatures() {
 }
 
 function logServiceStatus() {
-  // Fix the import path for notificationManager
+  // Fix the import path for notificationService
   const notificationService = require('../../services/notifications/notificationService');
   
   const serviceStatus = {

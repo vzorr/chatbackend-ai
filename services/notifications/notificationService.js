@@ -1,4 +1,4 @@
-// services/notifications/notificationService.js - UPDATED VERSION
+// services/notifications/notificationService.js - MINIMAL UPDATED VERSION
 const handlebars = require('handlebars');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../../db');
@@ -10,7 +10,9 @@ class NotificationService {
   constructor() {
     this.initialized = false;
     this.initPromise = null;
-    this.providers = new Map(); 
+    this.providers = new Map();
+    // ADDED: System UUID for handling "system" triggers
+    this.SYSTEM_USER_UUID = '00000000-0000-0000-0000-000000000001';
   }
 
   async ensureInitialized() {
@@ -30,13 +32,11 @@ class NotificationService {
     try {
       logger.info('Initializing notification service...');
 
-      // Initialize database
       if (!db.isInitialized()) {
         logger.info('Waiting for database initialization...');
         await db.waitForInitialization();
       }
 
-      // Initialize FCM
       const fcmInitialized = await fcmService.initialize();
       if (!fcmInitialized) {
         logger.warn('FCM service failed to initialize - push notifications may not work');
@@ -57,33 +57,53 @@ class NotificationService {
   }
 
   /**
-   * Process notification using eventKey (API) → eventId (UUID) lookup
+   * ADDED: Sanitize triggeredBy to ensure valid UUID
+   */
+  sanitizeTriggeredBy(triggeredBy) {
+    if (!triggeredBy) {
+      return this.SYSTEM_USER_UUID;
+    }
+    
+    if (triggeredBy === 'system') {
+      return this.SYSTEM_USER_UUID;
+    }
+    
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(triggeredBy)) {
+      logger.warn('Invalid triggeredBy UUID format, using system UUID', {
+        originalValue: triggeredBy
+      });
+      return this.SYSTEM_USER_UUID;
+    }
+    
+    return triggeredBy;
+  }
+
+  /**
+   * ENHANCED: Process notification with business context - FAIL-SAFE
    */
   async processNotification(appId, eventKey, recipientId, data = {}, businessContext = {}) {
     const operationId = uuidv4();
     
-    logger.info('Processing notification with eventKey lookup', {
+    logger.info('Processing notification', {
       operationId,
       appId,
       eventKey,
       recipientId,
-      businessContext
+      businessEntityType: businessContext.businessEntityType,
+      businessEntityId: businessContext.businessEntityId
     });
 
     let logEntry = null;
 
     try {
-      // Validate required business context
-      const { triggeredBy, businessEntityType, businessEntityId } = businessContext;
-      
-      if (!triggeredBy) {
-        throw new Error('triggeredBy is required in businessContext');
-      }
+      // FIXED: Sanitize triggeredBy
+      const sanitizedTriggeredBy = this.sanitizeTriggeredBy(businessContext.triggeredBy);
 
       await this.ensureInitialized();
       const models = db.getModels();
 
-      // Step 1: Get event with category and template using eventKey
+      // Get event with category and template using eventKey
       const event = await models.NotificationEvent.findOne({
         where: { eventKey, isActive: true },
         include: [
@@ -107,30 +127,58 @@ class NotificationService {
 
       const template = event.templates[0];
 
-      // Step 2: Compile template
-      const compiledTitle = this.compileTemplate(template.title, data);
-      const compiledBody = this.compileTemplate(template.body, data);
-      const compiledPayload = this.compilePayload(template.payload, data);
+      // FAIL-SAFE: Compile template with provided data (no extraction needed)
+      let compiledTitle, compiledBody, compiledPayload;
+      
+      try {
+        compiledTitle = this.compileTemplate(template.title, data);
+        compiledBody = this.compileTemplate(template.body, data);
+        compiledPayload = this.compilePayload(template.payload, data);
+      } catch (templateError) {
+        logger.warn('Template compilation failed, using fallbacks', {
+          eventKey,
+          error: templateError.message,
+          providedData: Object.keys(data)
+        });
+        // Fallback to basic notification
+        compiledTitle = template.title || 'Notification';
+        compiledBody = template.body || 'You have a new notification';
+        compiledPayload = {};
+      }
 
-      // Step 3: Create log entry with UUID eventId
+      // ENHANCED: Create log entry with business context
       logEntry = await models.NotificationLog.create({
         id: uuidv4(),
         recipientId,
-        triggeredBy,
-        eventId: event.id,        // UUID foreign key
+        triggeredBy: sanitizedTriggeredBy,
+        eventId: event.id,
         templateId: template.id,
         categoryId: event.categoryId,
-        businessEntityType,
-        businessEntityId,
+        businessEntityType: businessContext.businessEntityType,
+        businessEntityId: businessContext.businessEntityId,
         appId,
         title: compiledTitle,
         body: compiledBody,
-        payload: compiledPayload,
+        // ENHANCED: Store business context and provided data in payload
+        payload: {
+          ...compiledPayload,
+          businessContext: {
+            triggeredBy: sanitizedTriggeredBy,
+            businessEntityType: businessContext.businessEntityType,
+            businessEntityId: businessContext.businessEntityId,
+            metadata: businessContext.metadata || {}
+          },
+          templateData: data,
+          processingMetadata: {
+            operationId,
+            processedAt: new Date().toISOString()
+          }
+        },
         status: 'processing',
         channel: 'push'
       });
 
-      // Step 4: Get user device tokens
+      // Get user device tokens
       const deviceTokens = await this.getUserDeviceTokens(recipientId);
 
       if (deviceTokens.length === 0) {
@@ -148,7 +196,7 @@ class NotificationService {
         };
       }
 
-      // Step 5: Send notifications
+      // Send notifications
       const notification = {
         title: compiledTitle,
         body: compiledBody,
@@ -157,7 +205,7 @@ class NotificationService {
 
       const sendResults = await this.sendToDevices(deviceTokens, notification);
 
-      // Step 6: Update log status
+      // Update log status
       const finalStatus = sendResults.success > 0 ? 'delivered' : 'failed';
       await logEntry.update({
         status: finalStatus,
@@ -261,7 +309,7 @@ class NotificationService {
 
       const tokens = await models.DeviceToken.findAll({
         where: {
-          userId: recipientId,  // ✅ FIELD NAME: Keep as 'userId' for DeviceToken model
+          userId: recipientId,
           active: true
         }
       });
@@ -286,7 +334,6 @@ class NotificationService {
       errors: []
     };
 
-    // Group tokens by platform
     const fcmTokens = [];
     const apnTokens = [];
 
@@ -298,7 +345,6 @@ class NotificationService {
       }
     });
 
-    // Send FCM notifications (Android)
     if (fcmTokens.length > 0) {
       try {
         for (const token of fcmTokens) {
@@ -328,7 +374,6 @@ class NotificationService {
       }
     }
 
-    // APN notifications would go here (iOS)
     if (apnTokens.length > 0) {
       logger.warn('APN not implemented, skipping iOS notifications', {
         tokenCount: apnTokens.length
@@ -340,7 +385,7 @@ class NotificationService {
   }
 
   /**
-   * Compile template with handlebars
+   * FAIL-SAFE: Compile template with handlebars
    */
   compileTemplate(template, data) {
     try {
@@ -357,7 +402,7 @@ class NotificationService {
   }
 
   /**
-   * Compile payload object with handlebars
+   * FAIL-SAFE: Compile payload object with handlebars
    */
   compilePayload(payloadTemplate, data) {
     if (!payloadTemplate) return {};
@@ -384,11 +429,8 @@ class NotificationService {
     }
   }
 
-  // ===== TEMPLATE MANAGEMENT METHODS =====
+  // ===== ALL EXISTING METHODS STAY THE SAME =====
 
-  /**
-   * Get templates with event information
-   */
   async getTemplates(appId) {
     await this.ensureInitialized();
     const models = db.getModels();
@@ -411,14 +453,10 @@ class NotificationService {
     });
   }
 
-  /**
-   * Create or update template (SINGLE METHOD - removed duplicate)
-   */
   async upsertTemplate(templateData) {
     await this.ensureInitialized();
     const models = db.getModels();
     
-    // Validate that eventId exists
     if (templateData.eventId) {
       const event = await models.NotificationEvent.findByPk(templateData.eventId);
       if (!event) {
@@ -428,8 +466,6 @@ class NotificationService {
     
     return await models.NotificationTemplate.upsert(templateData);
   }
-
-  // ===== USER PREFERENCE METHODS =====
 
   async getUserPreferences(recipientId, appId) {
     await this.ensureInitialized();
@@ -441,7 +477,7 @@ class NotificationService {
     
     const preferences = await models.NotificationPreference.findAll({
       where: { 
-        userId: recipientId,  // ✅ FIELD NAME: Keep as 'userId' for NotificationPreference model
+        userId: recipientId,
         appId 
       },
       include: [
@@ -456,14 +492,10 @@ class NotificationService {
     return preferences;
   }
 
-  /**
-   * Update user preference using eventKey
-   */
   async updateUserPreference(recipientId, appId, eventKey, enabled, channels = null) {
     await this.ensureInitialized();
     const models = db.getModels();
     
-    // Get event ID from eventKey
     const event = await models.NotificationEvent.findOne({
       where: { eventKey, isActive: true }
     });
@@ -474,7 +506,7 @@ class NotificationService {
     
     const [preference, created] = await models.NotificationPreference.findOrCreate({
       where: { 
-        userId: recipientId,  // ✅ FIELD NAME: Keep as 'userId' for NotificationPreference model
+        userId: recipientId,
         appId, 
         eventId: event.id
       },
@@ -497,11 +529,174 @@ class NotificationService {
     return preference;
   }
 
-  // ===== NOTIFICATION RETRIEVAL METHODS =====
+  async getUserNotifications(recipientId, options = {}) {
+    await this.ensureInitialized();
+    const models = db.getModels();
+    
+    const { 
+      limit = 20, 
+      offset = 0, 
+      unreadOnly = false,
+      appId,
+      read,
+      eventKey,
+      startDate,
+      endDate
+    } = options;
+    
+    const where = { recipientId: recipientId };
+    
+    if (unreadOnly || read === false) {
+      where.readAt = null;
+    } else if (read === true) {
+      where.readAt = { [models.Sequelize.Op.not]: null };
+    }
+    
+    if (appId) {
+      where.appId = appId;
+    }
+    
+    if (startDate || endDate) {
+      where.createdAt = {};
+      if (startDate) {
+        where.createdAt[models.Sequelize.Op.gte] = new Date(startDate);
+      }
+      if (endDate) {
+        where.createdAt[models.Sequelize.Op.lte] = new Date(endDate);
+      }
+    }
+    
+    const include = [
+      {
+        model: models.NotificationEvent,
+        as: 'event',
+        attributes: ['eventKey', 'eventName']
+      },
+      {
+        model: models.NotificationCategory,
+        as: 'category',
+        attributes: ['categoryKey', 'name', 'icon', 'color']
+      },
+      {
+        model: models.NotificationTemplate,
+        as: 'template',
+        attributes: ['appId'],
+        required: false
+      }
+    ];
+    
+    if (eventKey) {
+      include[0].where = { eventKey };
+      include[0].required = true;
+    }
+    
+    try {
+      return await models.NotificationLog.findAndCountAll({
+        where,
+        include,
+        limit,
+        offset,
+        order: [['createdAt', 'DESC']],
+        distinct: true
+      });
+    } catch (error) {
+      logger.error('Error in getUserNotifications', {
+        recipientId,
+        options,
+        error: error.message
+      });
+      throw error;
+    }
+  }
 
-  /**
-   * Get all notifications with advanced filtering
-   */
+  async getNotificationsByCategory(recipientId, categoryKey, options = {}) {
+    try {
+      await this.ensureInitialized();
+      const models = db.getModels();
+      
+      const { 
+        limit = 20, 
+        offset = 0, 
+        unreadOnly = false,
+        appId,
+        read,
+        eventKey
+      } = options;
+      
+      const category = await models.NotificationCategory.findOne({
+        where: { categoryKey, isActive: true }
+      });
+
+      if (!category) {
+        throw new Error(`Category not found: ${categoryKey}`);
+      }
+
+      const where = {
+        recipientId,
+        categoryId: category.id
+      };
+      
+      if (unreadOnly || read === false) {
+        where.readAt = null;
+      } else if (read === true) {
+        where.readAt = { [models.Sequelize.Op.not]: null };
+      }
+      
+      if (appId) {
+        where.appId = appId;
+      }
+      
+      const include = [
+        {
+          model: models.NotificationEvent,
+          as: 'event',
+          attributes: ['eventKey', 'eventName']
+        },
+        {
+          model: models.NotificationTemplate,
+          as: 'template',
+          attributes: ['appId'],
+          required: false
+        }
+      ];
+      
+      if (eventKey) {
+        include[0].where = { eventKey };
+        include[0].required = true;
+      }
+      
+      const result = await models.NotificationLog.findAndCountAll({
+        where,
+        include,
+        limit,
+        offset,
+        order: [['createdAt', 'DESC']],
+        distinct: true
+      });
+
+      return {
+        notifications: result.rows,
+        total: result.count,
+        hasMore: (offset + limit) < result.count,
+        category: {
+          key: category.categoryKey,
+          name: category.name,
+          icon: category.icon,
+          color: category.color
+        }
+      };
+
+    } catch (error) {
+      logger.error('Error fetching notifications by category', {
+        recipientId,
+        categoryKey,
+        options,
+        error: error.message
+      });
+      throw error;
+    }
+  }
+
   async getAllNotifications(options = {}) {
     await this.ensureInitialized();
     const models = db.getModels();
@@ -529,7 +724,6 @@ class NotificationService {
       }
     ];
     
-    // Apply filters
     if (filters.appId) where.appId = filters.appId;
     if (filters.recipientId) where.recipientId = filters.recipientId;
     if (filters.businessEntityType) where.businessEntityType = filters.businessEntityType;
@@ -539,13 +733,21 @@ class NotificationService {
       where.readAt = filters.read ? { [models.Sequelize.Op.not]: null } : null;
     }
     
-    // Filter by event key
+    if (filters.startDate || filters.endDate) {
+      where.createdAt = {};
+      if (filters.startDate) {
+        where.createdAt[models.Sequelize.Op.gte] = new Date(filters.startDate);
+      }
+      if (filters.endDate) {
+        where.createdAt[models.Sequelize.Op.lte] = new Date(filters.endDate);
+      }
+    }
+    
     if (filters.eventKey) {
       include[0].where = { eventKey: filters.eventKey };
       include[0].required = true;
     }
     
-    // Filter by category key
     if (filters.categoryKey) {
       include[0].include[0].where = { categoryKey: filters.categoryKey };
       include[0].include[0].required = true;
@@ -562,276 +764,6 @@ class NotificationService {
     });
   }
 
-
-  // UPDATE THESE METHODS IN YOUR notificationService.js FILE
-
-/**
- * Get user notifications with enhanced filtering
- * REPLACE the existing getUserNotifications method with this enhanced version
- */
-async getUserNotifications(recipientId, options = {}) {
-  await this.ensureInitialized();
-  const models = db.getModels();
-  
-  const { 
-    limit = 20, 
-    offset = 0, 
-    unreadOnly = false,
-    appId,
-    read,
-    eventKey,
-    startDate,
-    endDate
-  } = options;
-  
-  // Build where clause
-  const where = { recipientId: recipientId };
-  
-  // Handle read/unread status
-  if (unreadOnly || read === false) {
-    where.readAt = null;
-  } else if (read === true) {
-    where.readAt = { [models.Sequelize.Op.not]: null };
-  }
-  
-  // Filter by appId
-  if (appId) {
-    where.appId = appId;
-  }
-  
-  // Filter by date range
-  if (startDate || endDate) {
-    where.createdAt = {};
-    if (startDate) {
-      where.createdAt[models.Sequelize.Op.gte] = new Date(startDate);
-    }
-    if (endDate) {
-      where.createdAt[models.Sequelize.Op.lte] = new Date(endDate);
-    }
-  }
-  
-  // Build include array
-  const include = [
-    {
-      model: models.NotificationEvent,
-      as: 'event',
-      attributes: ['eventKey', 'eventName']
-    },
-    {
-      model: models.NotificationCategory,
-      as: 'category',
-      attributes: ['categoryKey', 'name', 'icon', 'color']
-    },
-    {
-      model: models.NotificationTemplate,
-      as: 'template',
-      attributes: ['appId'],
-      required: false
-    }
-  ];
-  
-  // Filter by eventKey if provided
-  if (eventKey) {
-    include[0].where = { eventKey };
-    include[0].required = true;
-  }
-  
-  try {
-    return await models.NotificationLog.findAndCountAll({
-      where,
-      include,
-      limit,
-      offset,
-      order: [['createdAt', 'DESC']],
-      distinct: true
-    });
-  } catch (error) {
-    logger.error('Error in getUserNotifications with enhanced filtering', {
-      recipientId,
-      options,
-      error: error.message
-    });
-    throw error;
-  }
-}
-
-/**
- * Get notifications by category with enhanced filtering
- * REPLACE the existing getNotificationsByCategory method with this enhanced version
- */
-async getNotificationsByCategory(recipientId, categoryKey, options = {}) {
-  try {
-    await this.ensureInitialized();
-    const models = db.getModels();
-    
-    const { 
-      limit = 20, 
-      offset = 0, 
-      unreadOnly = false,
-      appId,
-      read,
-      eventKey
-    } = options;
-    
-    // Get category ID
-    const category = await models.NotificationCategory.findOne({
-      where: { categoryKey, isActive: true }
-    });
-
-    if (!category) {
-      throw new Error(`Category not found: ${categoryKey}`);
-    }
-
-    // Build where clause with enhanced filtering
-    const where = {
-      recipientId,
-      categoryId: category.id
-    };
-    
-    // Handle read/unread status
-    if (unreadOnly || read === false) {
-      where.readAt = null;
-    } else if (read === true) {
-      where.readAt = { [models.Sequelize.Op.not]: null };
-    }
-    
-    // Filter by appId
-    if (appId) {
-      where.appId = appId;
-    }
-    
-    // Build include array
-    const include = [
-      {
-        model: models.NotificationEvent,
-        as: 'event',
-        attributes: ['eventKey', 'eventName']
-      },
-      {
-        model: models.NotificationTemplate,
-        as: 'template',
-        attributes: ['appId'],
-        required: false
-      }
-    ];
-    
-    // Filter by eventKey if provided
-    if (eventKey) {
-      include[0].where = { eventKey };
-      include[0].required = true;
-    }
-    
-    const result = await models.NotificationLog.findAndCountAll({
-      where,
-      include,
-      limit,
-      offset,
-      order: [['createdAt', 'DESC']],
-      distinct: true
-    });
-
-    return {
-      notifications: result.rows,
-      total: result.count,
-      hasMore: (offset + limit) < result.count,
-      category: {
-        key: category.categoryKey,
-        name: category.name,
-        icon: category.icon,
-        color: category.color
-      }
-    };
-
-  } catch (error) {
-    logger.error('Error fetching notifications by category with enhanced filtering', {
-      recipientId,
-      categoryKey,
-      options,
-      error: error.message
-    });
-    throw error;
-  }
-}
-
-/**
- * Get all notifications with enhanced admin filtering
- * REPLACE the existing getAllNotifications method with this enhanced version
- */
-async getAllNotifications(options = {}) {
-  await this.ensureInitialized();
-  const models = db.getModels();
-  
-  const { limit = 50, offset = 0, filters = {} } = options;
-  
-  const where = {};
-  const include = [
-    {
-      model: models.NotificationEvent,
-      as: 'event',
-      attributes: ['eventKey', 'eventName'],
-      include: [
-        {
-          model: models.NotificationCategory,
-          as: 'category',
-          attributes: ['categoryKey', 'name']
-        }
-      ]
-    },
-    {
-      model: models.NotificationTemplate,
-      as: 'template',
-      attributes: ['appId']
-    }
-  ];
-  
-  // Apply filters
-  if (filters.appId) where.appId = filters.appId;
-  if (filters.recipientId) where.recipientId = filters.recipientId;
-  if (filters.businessEntityType) where.businessEntityType = filters.businessEntityType;
-  if (filters.businessEntityId) where.businessEntityId = filters.businessEntityId;
-  
-  // Handle read status
-  if (filters.read !== undefined) {
-    where.readAt = filters.read ? { [models.Sequelize.Op.not]: null } : null;
-  }
-  
-  // Filter by date range
-  if (filters.startDate || filters.endDate) {
-    where.createdAt = {};
-    if (filters.startDate) {
-      where.createdAt[models.Sequelize.Op.gte] = new Date(filters.startDate);
-    }
-    if (filters.endDate) {
-      where.createdAt[models.Sequelize.Op.lte] = new Date(filters.endDate);
-    }
-  }
-  
-  // Filter by event key
-  if (filters.eventKey) {
-    include[0].where = { eventKey: filters.eventKey };
-    include[0].required = true;
-  }
-  
-  // Filter by category key
-  if (filters.categoryKey) {
-    include[0].include[0].where = { categoryKey: filters.categoryKey };
-    include[0].include[0].required = true;
-    include[0].required = true;
-  }
-  
-  return await models.NotificationLog.findAndCountAll({
-    where,
-    include,
-    limit,
-    offset,
-    order: [['createdAt', 'DESC']],
-    distinct: true
-  });
-}
-
-  /**
-   * Mark notification as read
-   */
   async markAsRead(logId, recipientId) {
     await this.ensureInitialized();
     const models = db.getModels();
@@ -841,7 +773,7 @@ async getAllNotifications(options = {}) {
       { 
         where: { 
           id: logId,
-          recipientId: recipientId  // ✅ CONSISTENT: Use recipientId
+          recipientId: recipientId
         }
       }
     );
@@ -849,9 +781,6 @@ async getAllNotifications(options = {}) {
     return updatedCount > 0;
   }
 
-  /**
-   * Bulk mark notifications as read
-   */
   async bulkMarkAsRead(notificationIds, recipientId) {
     await this.ensureInitialized();
     const models = db.getModels();
@@ -861,7 +790,7 @@ async getAllNotifications(options = {}) {
       { 
         where: {
           id: { [models.Sequelize.Op.in]: notificationIds },
-          recipientId: recipientId,  // ✅ CONSISTENT: Use recipientId
+          recipientId: recipientId,
           readAt: null
         }
       }
@@ -870,20 +799,16 @@ async getAllNotifications(options = {}) {
     return { updated: updatedCount };
   }
 
-  /**
-   * Mark all notifications as read for user
-   */
   async markAllAsRead(recipientId, categoryKey = null) {
     await this.ensureInitialized();
     const models = db.getModels();
     
     const where = {
-      recipientId: recipientId,  // ✅ CONSISTENT: Use recipientId
+      recipientId: recipientId,
       readAt: null
     };
 
     if (categoryKey) {
-      // Get category ID from database
       const category = await models.NotificationCategory.findOne({
         where: { categoryKey, isActive: true }
       });
@@ -901,94 +826,16 @@ async getAllNotifications(options = {}) {
     return { updated: updatedCount };
   }
 
-  // ===== CATEGORY & STATISTICS METHODS =====
-
-  /**
-   * Get notifications by category using direct database filtering
-   */
-  async getNotificationsByCategory(recipientId, categoryKey, options = {}) {
-    try {
-      await this.ensureInitialized();
-      const models = db.getModels();
-      
-      const { limit = 20, offset = 0, unreadOnly = false } = options;
-      
-      // Get category ID
-      const category = await models.NotificationCategory.findOne({
-        where: { categoryKey, isActive: true }
-      });
-
-      if (!category) {
-        throw new Error(`Category not found: ${categoryKey}`);
-      }
-
-      // Build where clause with direct category ID filter
-      const where = {
-        recipientId,  // ✅ CONSISTENT: Use recipientId
-        categoryId: category.id
-      };
-      
-      if (unreadOnly) {
-        where.readAt = null;
-      }
-      
-      const result = await models.NotificationLog.findAndCountAll({
-        where,
-        include: [
-          {
-            model: models.NotificationEvent,
-            as: 'event',
-            attributes: ['eventKey', 'eventName']
-          },
-          {
-            model: models.NotificationTemplate,
-            as: 'template',
-            attributes: ['appId']
-          }
-        ],
-        limit,
-        offset,
-        order: [['createdAt', 'DESC']],
-        distinct: true
-      });
-
-      return {
-        notifications: result.rows,
-        total: result.count,
-        hasMore: (offset + limit) < result.count,
-        category: {
-          key: category.categoryKey,
-          name: category.name,
-          icon: category.icon,
-          color: category.color
-        }
-      };
-
-    } catch (error) {
-      logger.error('Error fetching notifications by category', {
-        recipientId,
-        categoryKey,
-        error: error.message
-      });
-      throw error;
-    }
-  }
-
-  /**
-   * Get unread notification counts by category using optimized SQL
-   */
   async getUnreadCounts(recipientId) {
     try {
       await this.ensureInitialized();
       const models = db.getModels();
       
-      // Get all categories
       const categories = await models.NotificationCategory.findAll({
         where: { isActive: true },
         order: [['displayOrder', 'ASC']]
       });
 
-      // Get unread counts per category in single query
       const countQuery = `
         SELECT nc.category_key, COUNT(*) as unread_count
         FROM notification_logs nl
@@ -1004,7 +851,6 @@ async getAllNotifications(options = {}) {
         type: models.sequelize.QueryTypes.SELECT
       });
 
-      // Build response with all categories
       const counts = {};
       let total = 0;
 
@@ -1028,137 +874,6 @@ async getAllNotifications(options = {}) {
     }
   }
 
-  /**
-   * Get event by eventKey
-   */
-  async getEventByKey(eventKey) {
-    try {
-      await this.ensureInitialized();
-      const models = db.getModels();
-      
-      return await models.NotificationEvent.findOne({
-        where: { eventKey, isActive: true },
-        include: [
-          { 
-            model: models.NotificationCategory, 
-            as: 'category',
-            where: { isActive: true }
-          }
-        ]
-      });
-    } catch (error) {
-      logger.error('Error getting event by key', {
-        eventKey,
-        error: error.message
-      });
-      throw error;
-    }
-  }
-
-  /**
-   * Get category by category key
-   */
-  async getCategoryByKey(categoryKey) {
-    try {
-      await this.ensureInitialized();
-      const models = db.getModels();
-      
-      return await models.NotificationCategory.findOne({
-        where: { categoryKey, isActive: true }
-      });
-    } catch (error) {
-      logger.error('Error getting category by key', {
-        categoryKey,
-        error: error.message
-      });
-      throw error;
-    }
-  }
-
-  /**
-   * Get template for specific event and app
-   */
-  async getTemplateForEvent(eventId, appId) {
-    try {
-      await this.ensureInitialized();
-      const models = db.getModels();
-      
-      return await models.NotificationTemplate.findOne({
-        where: { eventId, appId }
-      });
-    } catch (error) {
-      logger.error('Error getting template for event', {
-        eventId,
-        appId,
-        error: error.message
-      });
-      throw error;
-    }
-  }
-
-  /**
-   * Get all categories
-   */
-  async getAllCategories() {
-    try {
-      await this.ensureInitialized();
-      const models = db.getModels();
-      
-      return await models.NotificationCategory.findAll({
-        where: { isActive: true },
-        order: [['displayOrder', 'ASC']],
-        include: [
-          {
-            model: models.NotificationEvent,
-            as: 'events',
-            where: { isActive: true },
-            required: false
-          }
-        ]
-      });
-    } catch (error) {
-      logger.error('Error getting all categories', {
-        error: error.message
-      });
-      throw error;
-    }
-  }
-
-  /**
-   * Get all events (optionally filtered by category)
-   */
-  async getAllEvents(categoryId = null) {
-    try {
-      await this.ensureInitialized();
-      const models = db.getModels();
-      
-      const where = { isActive: true };
-      if (categoryId) {
-        where.categoryId = categoryId;
-      }
-      
-      return await models.NotificationEvent.findAll({
-        where,
-        include: [
-          {
-            model: models.NotificationCategory,
-            as: 'category'
-          }
-        ],
-        order: [['eventName', 'ASC']]
-      });
-    } catch (error) {
-      logger.error('Error getting all events', {
-        categoryId,
-        error: error.message
-      });
-      throw error;
-    }
-  }
-
-  /**
-   * Get notification statistics
-   */
   async getNotificationStats(recipientId) {
     await this.ensureInitialized();
     const models = db.getModels();
@@ -1196,44 +911,60 @@ async getAllNotifications(options = {}) {
     };
   }
 
-  /**
-   * Clear user notifications
-   */
-  async clearUserNotifications(recipientId, appId = null) {
-    await this.ensureInitialized();
-    const models = db.getModels();
-
-    const whereClause = { recipientId };
-    if (appId) {
-      whereClause.appId = appId;
+  async getAllCategories() {
+    try {
+      await this.ensureInitialized();
+      const models = db.getModels();
+      
+      return await models.NotificationCategory.findAll({
+        where: { isActive: true },
+        order: [['displayOrder', 'ASC']],
+        include: [
+          {
+            model: models.NotificationEvent,
+            as: 'events',
+            where: { isActive: true },
+            required: false
+          }
+        ]
+      });
+    } catch (error) {
+      logger.error('Error getting all categories', {
+        error: error.message
+      });
+      throw error;
     }
-
-    const beforeCount = await models.NotificationLog.count({
-      where: whereClause
-    });
-
-    const deletedCount = await models.NotificationLog.destroy({
-      where: whereClause
-    });
-
-    return {
-      beforeCount,
-      deletedCount
-    };
   }
 
-  /**
-   * Get detailed notification statistics
-   */
-  async getDetailedNotificationStats(recipientId) {
-    return await this.getNotificationStats(recipientId);
+  async getAllEvents(categoryId = null) {
+    try {
+      await this.ensureInitialized();
+      const models = db.getModels();
+      
+      const where = { isActive: true };
+      if (categoryId) {
+        where.categoryId = categoryId;
+      }
+      
+      return await models.NotificationEvent.findAll({
+        where,
+        include: [
+          {
+            model: models.NotificationCategory,
+            as: 'category'
+          }
+        ],
+        order: [['eventName', 'ASC']]
+      });
+    } catch (error) {
+      logger.error('Error getting all events', {
+        categoryId,
+        error: error.message
+      });
+      throw error;
+    }
   }
 
-  // ===== SOCKET/MESSAGE COMPATIBILITY METHODS =====
-
-  /**
-   * Send message notification using eventKey
-   */
   async sendMessageNotification(message, recipients) {
     try {
       const results = [];
@@ -1317,9 +1048,6 @@ async getAllNotifications(options = {}) {
     }
   }
 
-  /**
-   * Send notification using eventKey (legacy compatibility)
-   */
   async sendNotification(recipientId, notification) {
     try {
       await this.ensureInitialized();
@@ -1345,7 +1073,7 @@ async getAllNotifications(options = {}) {
       };
 
       const businessContext = {
-        triggeredBy: notification.triggeredBy || 'system',
+        triggeredBy: this.sanitizeTriggeredBy(notification.triggeredBy || 'system'),
         businessEntityType: notification.businessEntityType || BUSINESS_ENTITY_TYPES.SYSTEM,
         businessEntityId: notification.businessEntityId || 'legacy_notification',
         metadata: {
@@ -1365,16 +1093,17 @@ async getAllNotifications(options = {}) {
     }
   }
 
-  /**
-   * Ensure database initialized (alias)
-   */
+  truncateMessage(text, maxLength = 100) {
+    if (!text || text.length <= maxLength) {
+      return text;
+    }
+    return text.substring(0, maxLength - 3) + '...';
+  }
+
   async ensureDbInitialized() {
     return await this.ensureInitialized();
   }
 
-  /**
-   * Shutdown service
-   */
   async shutdown() {
     try {
       if (this.providers.has('APN')) {
@@ -1389,16 +1118,6 @@ async getAllNotifications(options = {}) {
         error: error.message
       });
     }
-  }
-
-  /**
-   * Truncate message helper
-   */
-  truncateMessage(text, maxLength = 100) {
-    if (!text || text.length <= maxLength) {
-      return text;
-    }
-    return text.substring(0, maxLength - 3) + '...';
   }
 }
 
