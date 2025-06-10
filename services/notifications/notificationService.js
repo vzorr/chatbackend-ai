@@ -103,7 +103,7 @@ class NotificationService {
       await this.ensureInitialized();
       const models = db.getModels();
 
-      // Get event with category and template using eventKey
+      // Get event with category and template using eventKey .
       const event = await models.NotificationEvent.findOne({
         where: { eventKey, isActive: true },
         include: [
