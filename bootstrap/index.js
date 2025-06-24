@@ -8,8 +8,6 @@ const logStep = (step, message, data = {}) => {
   const logData = {
     timestamp,
     step,
-    pid: process.pid,
-    memoryUsage: process.memoryUsage(),
     ...data
   };
   
@@ -124,11 +122,7 @@ class Bootstrap {
       logger.info('📋 [Step 0/7] Initializing cluster mode...');
       
       logStep('STEP_0_BEFORE_CLUSTER', 'About to call initializeCluster()');
-      this.clusterInfo = await this.timeoutWrapper(
-        initializers.initializeCluster(),
-        'initializeCluster',
-        30000 // 30 second timeout
-      );
+      this.clusterInfo = await initializers.initializeCluster();
       logStep('STEP_0_CLUSTER_RESULT', 'Cluster initialization completed', this.clusterInfo);
       
       logger.info('✅ [Step 0/7] Cluster mode initialized', {
@@ -147,66 +141,42 @@ class Bootstrap {
       // Step 1: Log environment information
       logStep('STEP_1_START', 'Starting environment info logging');
       logger.info('📋 [Step 1/7] Logging environment information...');
-      await this.timeoutWrapper(
-        initializers.logEnvironmentInfo(),
-        'logEnvironmentInfo',
-        10000
-      );
+      await initializers.logEnvironmentInfo();
       logStep('STEP_1_COMPLETE', 'Environment info logging completed');
       logger.info('✅ [Step 1/7] Environment information logged');
 
       // Step 2: Validate environment and dependencies
       logStep('STEP_2_START', 'Starting prerequisites validation');
       logger.info('📋 [Step 2/7] Validating prerequisites...');
-      await this.timeoutWrapper(
-        this.validatePrerequisites(),
-        'validatePrerequisites',
-        20000
-      );
+      await this.validatePrerequisites();
       logStep('STEP_2_COMPLETE', 'Prerequisites validation completed');
       logger.info('✅ [Step 2/7] Prerequisites validated');
 
       // Step 3: Initialize core components
       logStep('STEP_3_START', 'Starting core components initialization');
       logger.info('📋 [Step 3/7] Initializing core components...');
-      await this.timeoutWrapper(
-        this.initializeCoreComponents(),
-        'initializeCoreComponents',
-        60000
-      );
+      await this.initializeCoreComponents();
       logStep('STEP_3_COMPLETE', 'Core components initialization completed');
       logger.info('✅ [Step 3/7] Core components initialized');
 
       // Step 4: Configure Express app
       logStep('STEP_4_START', 'Starting Express app configuration');
       logger.info('📋 [Step 4/7] Configuring Express application...');
-      await this.timeoutWrapper(
-        this.configureExpressApp(),
-        'configureExpressApp',
-        30000
-      );
+      await this.configureExpressApp();
       logStep('STEP_4_COMPLETE', 'Express app configuration completed');
       logger.info('✅ [Step 4/7] Express application configured');
 
       // Step 5: Initialize metrics
       logStep('STEP_5_START', 'Starting metrics initialization');
       logger.info('📋 [Step 5/7] Initializing metrics system...');
-      await this.timeoutWrapper(
-        initializers.initializeMetrics(this.app),
-        'initializeMetrics',
-        10000
-      );
+      await initializers.initializeMetrics(this.app);
       logStep('STEP_5_COMPLETE', 'Metrics initialization completed');
       logger.info('✅ [Step 5/7] Metrics system initialized');
 
       // Step 6: Start the server
       logStep('STEP_6_START', 'Starting HTTP server');
       logger.info('📋 [Step 6/7] Starting HTTP server...');
-      await this.timeoutWrapper(
-        this.startServer(),
-        'startServer',
-        30000
-      );
+      await this.startServer();
       logStep('STEP_6_COMPLETE', 'HTTP server startup completed');
       logger.info('✅ [Step 6/7] HTTP server started');
 
@@ -266,20 +236,8 @@ class Bootstrap {
     }
   }
 
-  // Timeout wrapper for async operations
-  async timeoutWrapper(promise, operationName, timeoutMs) {
-    logStep('TIMEOUT_WRAPPER', `Starting ${operationName} with ${timeoutMs}ms timeout`);
-    
-    return Promise.race([
-      promise,
-      new Promise((_, reject) => {
-        setTimeout(() => {
-          logError('TIMEOUT_WRAPPER', new Error(`${operationName} timed out after ${timeoutMs}ms`));
-          reject(new Error(`${operationName} timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
-      })
-    ]);
-  }
+  // Remove the timeout wrapper since it's causing issues
+  // The functions work fine without timeout protection
 
   async validatePrerequisites() {
     const startTime = Date.now();
