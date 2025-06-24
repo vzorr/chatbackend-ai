@@ -10,17 +10,17 @@ module.exports = (sequelize, DataTypes) => {
     userId: {
       type: DataTypes.UUID,
       allowNull: false,
-      field: 'user_id' // ✅ ADDED: Consistent with underscored naming
+      field: 'user_id'
     },
     token: {
       type: DataTypes.TEXT,
       allowNull: false,
-      unique: true
+      unique: false // ✅ CHANGED: Removed uniqueness to allow same token on multiple devices
     },
     deviceType: {
       type: DataTypes.ENUM('mobile', 'web'),
       defaultValue: 'mobile',
-      field: 'device_type' // ✅ ADDED: Consistent with underscored naming
+      field: 'device_type'
     },
     platform: {
       type: DataTypes.STRING,
@@ -29,7 +29,7 @@ module.exports = (sequelize, DataTypes) => {
     deviceId: {
       type: DataTypes.STRING,
       allowNull: true,
-      field: 'device_id' // ✅ ADDED: Consistent with underscored naming
+      field: 'device_id'
     },
     active: {
       type: DataTypes.BOOLEAN,
@@ -38,28 +38,36 @@ module.exports = (sequelize, DataTypes) => {
     lastUsed: {
       type: DataTypes.DATE,
       defaultValue: DataTypes.NOW,
-      field: 'last_used' // ✅ ADDED: Consistent with underscored naming
+      field: 'last_used'
     }
   }, {
     tableName: 'device_tokens',
     timestamps: true,
-    underscored: true, // ✅ ADDED: Ensures all fields use snake_case
+    underscored: true,
     indexes: [
       {
+        // ✅ CHANGED: Non-unique index on token for performance
+        unique: false,
+        fields: ['token'],
+        name: 'idx_device_tokens_token_non_unique'
+      },
+      {
+        // ✅ ADDED: Composite unique constraint for proper device management
         unique: true,
-        fields: ['token']
+        fields: ['user_id', 'device_id'],
+        name: 'unique_user_device'
       },
       {
-        fields: ['user_id'] // ✅ UPDATED: Use underscored field name
+        fields: ['user_id']
       },
       {
-        fields: ['device_id'] // ✅ UPDATED: Use underscored field name
+        fields: ['device_id']
       },
       {
-        fields: ['user_id', 'platform'] // ✅ ADDED: Useful for finding user's tokens by platform
+        fields: ['user_id', 'platform']
       },
       {
-        fields: ['active'] // ✅ ADDED: For filtering active tokens
+        fields: ['active']
       }
     ]
   });
@@ -69,13 +77,15 @@ module.exports = (sequelize, DataTypes) => {
       foreignKey: 'userId',
       as: 'user'
     });
-    // ✅ ADDED: Association with notification logs for tracking which device received notifications
+    
     DeviceToken.hasMany(models.NotificationLog, {
       foreignKey: 'deviceToken',
       sourceKey: 'token',
       as: 'notifications'
     });
   };
+
+
 
   return DeviceToken;
 };

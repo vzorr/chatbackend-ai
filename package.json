@@ -5,6 +5,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
+    "dev:watch": "npm run dev & npm run logs:watch",
+    "dev:watch-logs": "concurrently \"npm run dev\" \"npm run logs:watch\" --names \"SERVER,LOGS\" --prefix-colors \"blue,green\"",
+    "dev:with-logs": "npm run dev & sleep 3 && npm run logs:watch",
     "worker": "node queueWorker.js",
     "migrate": "npx sequelize-cli db:migrate",
     "migrate:undo": "npx sequelize-cli db:migrate:undo",
@@ -19,7 +22,15 @@
     "seed:status": "npx sequelize-cli db:seed:status",
     "seed:templates": "npx sequelize-cli db:seed --seed db/seeders/notification-template-seeder.js",
     "seed:users": "npx sequelize-cli db:seed --seed *demo-users.js",
-    "seed:specific": "npx sequelize-cli db:seed --seed"
+    "seed:specific": "npx sequelize-cli db:seed --seed",
+    "logs:beautify": "node scripts/vortex-log-beautifier.js",
+    "logs:watch": "tail -f logs/application-$(date +%Y-%m-%d).log | node scripts/vortex-log-beautifier.js /dev/stdin",
+    "logs:errors": "node scripts/vortex-log-beautifier.js logs/error-$(date +%Y-%m-%d).log",
+    "logs:compact": "node scripts/vortex-log-beautifier.js logs/application-$(date +%Y-%m-%d).log --compact",
+    "logs:clean": "node scripts/vortex-log-beautifier.js logs/application-$(date +%Y-%m-%d).log --hide-socket-metrics --hide-server-stats",
+    "logs:requests": "node scripts/vortex-log-beautifier.js logs/application-$(date +%Y-%m-%d).log --compact | grep -E '🌐|🔌|📨'",
+    "logs:performance": "node scripts/vortex-log-beautifier.js logs/application-$(date +%Y-%m-%d).log | grep '⚡ Performance'",
+    "logs:audit": "node scripts/vortex-log-beautifier.js logs/application-$(date +%Y-%m-%d).log | grep '🔍 Audit'"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.787.0",
@@ -68,6 +79,7 @@
     "winston-elasticsearch": "^0.19.0"
   },
   "devDependencies": {
+    "concurrently": "^9.1.2",
     "jest": "^29.7.0",
     "nodemon": "^3.0.2",
     "supertest": "^6.3.3"
