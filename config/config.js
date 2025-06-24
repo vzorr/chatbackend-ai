@@ -1,10 +1,17 @@
-// config/config.js
+// config/config.js - Fixed Elasticsearch configuration
 module.exports = {
 
   app: {
     environment: process.env.APP_ENVIRONMENT || 'development',
     url: process.env.APP_URL || 'http://localhost:3001',
-    baseUrl: process.env.API_BASE_URL || 'http://localhost:3001'
+    baseUrl: process.env.API_BASE_URL || 'http://localhost:3001',
+    // Add SSL/domain support
+    domain: process.env.DOMAIN || 'localhost',
+    ssl: {
+      enabled: process.env.SSL_ENABLED === 'true',
+      forceHttps: process.env.FORCE_HTTPS === 'true',
+      behindProxy: process.env.TRUST_PROXY === 'true'
+    }
   },
   
   // Server Configuration
@@ -14,7 +21,13 @@ module.exports = {
     nodeEnv: process.env.NODE_ENV || 'development',
     corsOrigin: process.env.CORS_ORIGIN || '*',
     socketPath: process.env.SOCKET_PATH || '/socket.io',
-    socketUrl: process.env.SOCKET_URL || 'http://localhost:5000'
+    socketUrl: process.env.SOCKET_URL || 'http://localhost:5000',
+    // Add proxy configuration
+    proxy: {
+      enabled: process.env.TRUST_PROXY === 'true',
+      protocol: process.env.PROTOCOL || 'http',
+      publicUrl: process.env.APP_URL || process.env.SERVER_URL
+    }
   },
 
   // Database Configuration
@@ -105,14 +118,14 @@ module.exports = {
     }
   },
 
-  // Logging
+  // FIXED: Logging Configuration with optional Elasticsearch
   logging: {
     level: process.env.LOG_LEVEL || 'info',
     elasticsearch: {
       enabled: !!process.env.ELASTICSEARCH_URL,
-      url: process.env.ELASTICSEARCH_URL,
-      user: process.env.ELASTICSEARCH_USER || '',
-      password: process.env.ELASTICSEARCH_PASSWORD || ''
+      url: process.env.ELASTICSEARCH_URL || null,
+      user: process.env.ELASTICSEARCH_USER || null,
+      password: process.env.ELASTICSEARCH_PASSWORD || null
     },
     retention: {
       days: parseInt(process.env.LOG_RETENTION_DAYS || '30')
@@ -156,7 +169,36 @@ module.exports = {
     trustProxy: process.env.TRUST_PROXY === 'true',
     sessionSecret: process.env.SESSION_SECRET || 'default-secret-change-this',
     encryptionKey: process.env.ENCRYPTION_KEY,
-    hashRounds: parseInt(process.env.HASH_ROUNDS || '10')
+    hashRounds: parseInt(process.env.HASH_ROUNDS || '10'),
+    // SSL/HTTPS security settings
+    ssl: {
+      behindProxy: process.env.TRUST_PROXY === 'true',
+      hsts: {
+        enabled: process.env.HSTS_ENABLED === 'true',
+        maxAge: parseInt(process.env.HSTS_MAX_AGE || '31536000'), // 1 year
+        includeSubDomains: process.env.HSTS_INCLUDE_SUBDOMAINS === 'true',
+        preload: process.env.HSTS_PRELOAD === 'true'
+      },
+      forceHttps: process.env.FORCE_HTTPS === 'true'
+    }
+  },
+
+  // SSL Configuration (for direct SSL if needed)
+  ssl: {
+    enabled: process.env.SSL_ENABLED === 'true',
+    certificatePath: process.env.SSL_CERT_PATH,
+    privateKeyPath: process.env.SSL_KEY_PATH,
+    caPath: process.env.SSL_CA_PATH,
+    passphrase: process.env.SSL_PASSPHRASE,
+    // TLS options
+    secureProtocol: process.env.SSL_SECURE_PROTOCOL || 'TLSv1_2_method',
+    ciphers: process.env.SSL_CIPHERS,
+    honorCipherOrder: process.env.SSL_HONOR_CIPHER_ORDER === 'true',
+    // Client certificate settings (if needed)
+    requestCert: process.env.SSL_REQUEST_CERT === 'true',
+    rejectUnauthorized: process.env.SSL_REJECT_UNAUTHORIZED !== 'false',
+    // Development settings
+    allowSelfSigned: process.env.SSL_ALLOW_SELF_SIGNED === 'true'
   },
 
   // Monitoring
@@ -231,8 +273,37 @@ module.exports = {
     cacheTTL: parseInt(process.env.CACHE_TTL || '3600')
   },
 
-  // Webhooks (if you add them later)
+  // Webhooks
   webhooks: {
-    enabled: process.env.WEBHOOKS_ENABLED === 'true'
+    enabled: process.env.WEBHOOKS_ENABLED === 'true',
+    secret: process.env.WEBHOOK_SECRET,
+    timeout: parseInt(process.env.WEBHOOK_TIMEOUT || '30000')
+  },
+
+  // CORS Configuration (detailed)
+  cors: {
+    origin: process.env.CORS_ORIGIN || '*',
+    methods: (process.env.CORS_METHODS || 'GET,POST,PUT,DELETE,OPTIONS,PATCH').split(','),
+    allowedHeaders: (process.env.CORS_ALLOWED_HEADERS || 'Content-Type,Authorization,X-Requested-With,X-API-Key').split(','),
+    exposedHeaders: (process.env.CORS_EXPOSED_HEADERS || 'X-Correlation-ID,X-RateLimit-Limit,X-RateLimit-Remaining').split(','),
+    maxAge: parseInt(process.env.CORS_MAX_AGE || '86400'),
+    credentials: process.env.CORS_CREDENTIALS === 'true'
+  },
+
+  // Socket.IO Configuration
+  socketio: {
+    transports: (process.env.SOCKET_TRANSPORTS || 'websocket,polling').split(','),
+    pingTimeout: parseInt(process.env.SOCKET_PING_TIMEOUT || '30000'),
+    pingInterval: parseInt(process.env.SOCKET_PING_INTERVAL || '10000'),
+    maxBuffer: parseInt(process.env.SOCKET_MAX_BUFFER || '1000000'),
+    path: process.env.SOCKET_PATH || '/socket.io'
+  },
+
+  // Development/Testing
+  development: {
+    testMode: process.env.TEST_MODE === 'true',
+    mockExternalServices: process.env.MOCK_EXTERNAL_SERVICES === 'true',
+    debugMode: process.env.DEBUG_MODE === 'true',
+    verboseLogging: process.env.VERBOSE_LOGGING === 'true'
   }
 };

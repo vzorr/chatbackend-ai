@@ -1,8 +1,9 @@
-// middleware/authentication.js - NO USER SYNCING VERSION
+// middleware/authentication.js - Enhanced with SSL support
 const jwt = require('jsonwebtoken');
 const logger = require('../utils/logger');
 const { validateUUID } = require('../utils/validation');
 const UserService = require('../services/userService');
+const config = require('../config/config');
 
 class AuthenticationMiddleware {
   async authenticate(req, res, next) {
@@ -10,6 +11,17 @@ class AuthenticationMiddleware {
     const timer = logger.startTimer();
 
     try {
+      // Enhanced security check for production
+      if (config.server.nodeEnv === 'production' && !req.isSecure) {
+        logger.security('insecure_auth_attempt', {
+          requestId,
+          ip: req.ip,
+          protocol: req.protocol,
+          userAgent: req.get('user-agent')
+        });
+        return this.sendUnauthorizedResponse(res, 'HTTPS required for authentication');
+      }
+
       const token = this.extractToken(req);
       if (!token) return this.sendUnauthorizedResponse(res, 'Authentication required');
 
@@ -20,7 +32,13 @@ class AuthenticationMiddleware {
         userId: decoded.id || decoded.userId,
         tokenType: decoded.tokenType || 'standard',
         ip: req.ip,
-        userAgent: req.get('user-agent')
+        userAgent: req.get('user-agent'),
+        secure: req.isSecure,
+        protocol: req.protocol,
+        // Enhanced proxy context
+        realIp: req.get('x-real-ip'),
+        forwardedFor: req.get('x-forwarded-for'),
+        viaProxy: !!req.get('x-forwarded-proto')
       });
 
       const user = await this.getUser(decoded, req);
@@ -30,15 +48,30 @@ class AuthenticationMiddleware {
       req.authToken = token;
       req.tokenData = decoded;
 
+      // Set secure cookie attributes if connection is secure
+      if (req.isSecure && res.cookie) {
+        res.cookie('authToken', token, {
+          httpOnly: true,
+          secure: true,
+          sameSite: 'strict',
+          maxAge: 24 * 60 * 60 * 1000 // 24 hours
+        });
+      }
+
       timer.done('authentication', {
         userId: user.id,
         externalId: user.externalId,
-        success: true
+        success: true,
+        secure: req.isSecure
       });
 
       next();
     } catch (error) {
-      timer.done('authentication', { success: false, error: error.message });
+      timer.done('authentication', { 
+        success: false, 
+        error: error.message,
+        secure: req.isSecure 
+      });
       this.handleAuthError(error, res, requestId);
     }
   }
@@ -52,7 +85,12 @@ class AuthenticationMiddleware {
         next();
       }
     } catch (error) {
-      logger.warn('Optional authentication failed', { error: error.message, requestId: req.id });
+      logger.warn('Optional authentication failed', { 
+        error: error.message, 
+        requestId: req.id,
+        secure: req.isSecure,
+        protocol: req.protocol
+      });
       next();
     }
   }
@@ -61,7 +99,20 @@ class AuthenticationMiddleware {
     const authHeader = req.headers.authorization;
     if (authHeader?.startsWith('Bearer ')) return authHeader.substring(7);
     if (req.query.token) return req.query.token;
-    if (req.cookies?.authToken) return req.cookies.authToken;
+    
+    // Enhanced cookie extraction with security checks
+    if (req.cookies?.authToken) {
+      // In production, only accept cookies over HTTPS
+      if (config.server.nodeEnv === 'production' && !req.isSecure) {
+        logger.warn('Cookie token rejected over insecure connection', {
+          ip: req.ip,
+          protocol: req.protocol
+        });
+        return null;
+      }
+      return req.cookies.authToken;
+    }
+    
     return null;
   }
 
@@ -92,7 +143,8 @@ class AuthenticationMiddleware {
     if (!user) {
       logger.warn('User not found in chat system during authentication', {
         externalId,
-        requestId: req.id
+        requestId: req.id,
+        secure: req.isSecure
       });
       return null;
     }
@@ -100,7 +152,8 @@ class AuthenticationMiddleware {
     logger.debug('User found for authentication', {
       userId: user.id,
       externalId: user.externalId,
-      requestId: req.id
+      requestId: req.id,
+      secure: req.isSecure
     });
 
     return user;
@@ -111,7 +164,10 @@ class AuthenticationMiddleware {
       error: error.message,
       code: error.code,
       requestId,
-      ip: res.req.ip
+      ip: res.req.ip,
+      secure: res.req.isSecure,
+      protocol: res.req.protocol,
+      userAgent: res.req.get('user-agent')
     });
 
     const statusCode = ['TOKEN_EXPIRED', 'INVALID_TOKEN'].includes(error.code) ? 401 : 500;
@@ -121,7 +177,8 @@ class AuthenticationMiddleware {
       error: {
         code: error.code || 'AUTH_ERROR',
         message: this.getAuthErrorMessage(error),
-        requestId
+        requestId,
+        secure: res.req.isSecure
       }
     });
   }
@@ -132,7 +189,8 @@ class AuthenticationMiddleware {
       'INVALID_TOKEN': 'Invalid authentication token',
       'NO_TOKEN': 'No authentication token provided',
       'INVALID_USER': 'User account not found',
-      'USER_NOT_FOUND': 'User not found in chat system'
+      'USER_NOT_FOUND': 'User not found in chat system',
+      'HTTPS_REQUIRED': 'HTTPS connection required for secure authentication'
     };
     return messages[error.code] || 'Authentication failed';
   }
@@ -143,7 +201,8 @@ class AuthenticationMiddleware {
       error: {
         code: 'UNAUTHORIZED',
         message,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        secure: res.req?.isSecure || false
       }
     });
   }
@@ -157,7 +216,9 @@ class AuthenticationMiddleware {
           userId: req.user.id,
           userRole: req.user.role,
           requiredRoles: allowedRoles,
-          requestId: req.id
+          requestId: req.id,
+          secure: req.isSecure,
+          ip: req.ip
         });
 
         return res.status(403).json({
@@ -165,7 +226,8 @@ class AuthenticationMiddleware {
           error: {
             code: 'FORBIDDEN',
             message: 'Insufficient permissions',
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            secure: req.isSecure
           }
         });
       }
@@ -176,21 +238,67 @@ class AuthenticationMiddleware {
 
   async authenticateApiKey(req, res, next) {
     try {
+      // Enhanced security check for API keys in production
+      if (config.server.nodeEnv === 'production' && !req.isSecure) {
+        logger.security('insecure_api_key_attempt', {
+          ip: req.ip,
+          protocol: req.protocol,
+          userAgent: req.get('user-agent')
+        });
+        return this.sendUnauthorizedResponse(res, 'HTTPS required for API key authentication');
+      }
+
       const apiKey = req.headers['x-api-key'] || req.query.apiKey;
       if (!apiKey) return this.sendUnauthorizedResponse(res, 'API key required');
 
       const validApiKeys = (process.env.VALID_API_KEYS || '').split(',');
       if (!validApiKeys.includes(apiKey)) {
-        logger.security('invalid_api_key', { apiKey: apiKey.substring(0, 8) + '...', ip: req.ip });
+        logger.security('invalid_api_key', { 
+          apiKey: apiKey.substring(0, 8) + '...', 
+          ip: req.ip,
+          secure: req.isSecure,
+          realIp: req.get('x-real-ip')
+        });
         return this.sendUnauthorizedResponse(res, 'Invalid API key');
       }
 
       req.isServiceRequest = true;
       req.apiKey = apiKey;
+      
+      logger.info('API key authentication successful', {
+        ip: req.ip,
+        secure: req.isSecure,
+        requestId: req.id
+      });
+      
       next();
     } catch (error) {
       this.handleAuthError(error, res, req.id);
     }
+  }
+
+  // New method: Require HTTPS for sensitive operations
+  requireSecure() {
+    return (req, res, next) => {
+      if (config.server.nodeEnv === 'production' && !req.isSecure) {
+        logger.security('insecure_sensitive_operation', {
+          path: req.path,
+          method: req.method,
+          ip: req.ip,
+          protocol: req.protocol
+        });
+        
+        return res.status(403).json({
+          success: false,
+          error: {
+            code: 'HTTPS_REQUIRED',
+            message: 'HTTPS connection required for this operation',
+            timestamp: new Date().toISOString()
+          }
+        });
+      }
+      next();
+    };
   }
 }
 
@@ -200,3 +308,4 @@ module.exports.authenticate = authMiddleware.authenticate.bind(authMiddleware);
 module.exports.optionalAuthenticate = authMiddleware.optionalAuthenticate.bind(authMiddleware);
 module.exports.authorize = authMiddleware.authorize.bind(authMiddleware);
 module.exports.authenticateApiKey = authMiddleware.authenticateApiKey.bind(authMiddleware);
+module.exports.requireSecure = authMiddleware.requireSecure.bind(authMiddleware);

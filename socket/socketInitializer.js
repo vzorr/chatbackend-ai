@@ -89,8 +89,6 @@ module.exports = async (io) => {
     logger.info('ℹ️ No Redis host configured, using in-memory adapter');
   }
 
-  // Continue with the rest of your socket initialization...
-  
   // Attach authentication middleware
   io.use(socketAuthMiddleware);
   logger.info('✅ Socket.IO authentication middleware attached');
@@ -100,7 +98,9 @@ module.exports = async (io) => {
   const socketMetrics = {
     connections: 0,
     authenticated: 0,
-    rateLimited: 0
+    rateLimited: 0,
+    secureConnections: 0,
+    proxyConnections: 0
   };
 
   // Global socket error handler
@@ -111,19 +111,65 @@ module.exports = async (io) => {
     });
   });
 
-  // Connection event handler
+  // Enhanced connection event handler with SSL/proxy awareness
   io.on('connection', (socket) => {
     socketMetrics.connections++;
     
-    logger.info(`🔌 New socket connection`, {
+    // Enhanced connection info with SSL/proxy detection
+    const isSecure = socket.handshake.secure || socket.handshake.headers['x-forwarded-proto'] === 'https';
+    const viaProxy = !!(socket.handshake.headers['x-forwarded-proto'] || 
+                       socket.handshake.headers['x-real-ip'] || 
+                       socket.handshake.headers['x-forwarded-for']);
+    
+    // Update metrics
+    if (isSecure) socketMetrics.secureConnections++;
+    if (viaProxy) socketMetrics.proxyConnections++;
+    
+    const connectionInfo = {
       socketId: socket.id,
       userId: socket.user?.id,
       userName: socket.user?.name,
       transport: socket.conn.transport.name,
       ip: socket.handshake.address,
       userAgent: socket.handshake.headers['user-agent'],
+      // Enhanced SSL/proxy detection
+      secure: isSecure,
+      protocol: socket.handshake.headers['x-forwarded-proto'] || (socket.handshake.secure ? 'https' : 'http'),
+      origin: socket.handshake.headers.origin,
+      referer: socket.handshake.headers.referer,
+      // Proxy headers (if present)
+      realIp: socket.handshake.headers['x-real-ip'],
+      forwardedFor: socket.handshake.headers['x-forwarded-for'],
+      forwardedHost: socket.handshake.headers['x-forwarded-host'],
+      viaProxy: viaProxy,
       metrics: socketMetrics
-    });
+    };
+    
+    logger.info(`🔌 New socket connection`, connectionInfo);
+    
+    // Log SSL-specific info if connection is secure
+    if (isSecure) {
+      logger.info(`🔒 Secure WebSocket connection established`, {
+        socketId: socket.id,
+        userId: socket.user?.id,
+        protocol: connectionInfo.protocol,
+        viaProxy: viaProxy,
+        transport: socket.conn.transport.name,
+        secureTransport: socket.conn.transport.name === 'websocket' ? 'WSS' : 'HTTPS Polling'
+      });
+    }
+
+    // Log proxy detection details
+    if (viaProxy) {
+      logger.debug(`🔄 Connection via proxy detected`, {
+        socketId: socket.id,
+        userId: socket.user?.id,
+        originalIp: socket.handshake.headers['x-real-ip'],
+        forwardedFor: socket.handshake.headers['x-forwarded-for'],
+        forwardedProto: socket.handshake.headers['x-forwarded-proto'],
+        forwardedHost: socket.handshake.headers['x-forwarded-host']
+      });
+    }
 
     // Flood control middleware for this socket
     socket.use((packet, next) => {
@@ -138,7 +184,9 @@ module.exports = async (io) => {
         logger.warn(`⚠️ Socket rate limit exceeded`, { 
           socketId: socket.id,
           userId: socket.user?.id,
-          eventsInWindow: recent.length
+          eventsInWindow: recent.length,
+          secure: isSecure,
+          viaProxy: viaProxy
         });
         return next(new Error('Rate limit exceeded'));
       }
@@ -152,18 +200,23 @@ module.exports = async (io) => {
           socketId: socket.id,
           userId: socket.user?.id,
           event,
-          argsCount: args.length
+          argsCount: args.length,
+          secure: isSecure,
+          transport: socket.conn.transport.name
         });
       });
     }
 
-    // Socket error handler
+    // Enhanced socket error handler
     socket.on('error', (error) => {
       logger.error(`❌ Socket error`, {
         socketId: socket.id,
         userId: socket.user?.id,
         error: error.message,
-        stack: error.stack
+        stack: error.stack,
+        secure: isSecure,
+        viaProxy: viaProxy,
+        transport: socket.conn.transport.name
       });
     });
 
@@ -177,30 +230,39 @@ module.exports = async (io) => {
       socketMetrics.authenticated++;
       logger.info(`✅ Socket handlers registered`, {
         socketId: socket.id,
-        userId: socket.user?.id
+        userId: socket.user?.id,
+        secure: isSecure,
+        viaProxy: viaProxy
       });
     } catch (error) {
       logger.error(`❌ Failed to register socket handlers`, {
         socketId: socket.id,
         userId: socket.user?.id,
         error: error.message,
-        stack: error.stack
+        stack: error.stack,
+        secure: isSecure,
+        viaProxy: viaProxy
       });
       socket.disconnect(true);
     }
 
-    // Disconnect handler
+    // Enhanced disconnect handler
     socket.on('disconnect', (reason) => {
       socketMetrics.connections--;
       if (socket.user) {
         socketMetrics.authenticated--;
       }
+      if (isSecure) socketMetrics.secureConnections--;
+      if (viaProxy) socketMetrics.proxyConnections--;
       
       logger.info(`🔌 Socket disconnected`, { 
         socketId: socket.id,
         userId: socket.user?.id,
         reason,
         duration: Date.now() - socket.handshake.issued,
+        secure: isSecure,
+        viaProxy: viaProxy,
+        transport: socket.conn.transport.name,
         metrics: socketMetrics
       });
       
@@ -210,7 +272,11 @@ module.exports = async (io) => {
 
     // Custom heartbeat for better connection monitoring
     const heartbeatInterval = setInterval(() => {
-      socket.emit('ping', { timestamp: Date.now() });
+      socket.emit('ping', { 
+        timestamp: Date.now(),
+        secure: isSecure,
+        server: process.env.NODE_ENV || 'development'
+      });
     }, 30000);
 
     socket.on('pong', (data) => {
@@ -218,32 +284,85 @@ module.exports = async (io) => {
       logger.debug(`💓 Socket heartbeat`, {
         socketId: socket.id,
         userId: socket.user?.id,
-        latency: `${latency}ms`
+        latency: `${latency}ms`,
+        secure: isSecure,
+        transport: socket.conn.transport.name
       });
     });
 
+    // Transport change detection
+    socket.conn.on('upgrade', () => {
+      logger.info(`⬆️ Socket transport upgraded`, {
+        socketId: socket.id,
+        userId: socket.user?.id,
+        newTransport: socket.conn.transport.name,
+        secure: isSecure,
+        viaProxy: viaProxy
+      });
+    });
+
+    socket.conn.on('upgradeError', (error) => {
+      logger.warn(`⚠️ Socket transport upgrade failed`, {
+        socketId: socket.id,
+        userId: socket.user?.id,
+        error: error.message,
+        currentTransport: socket.conn.transport.name,
+        secure: isSecure
+      });
+    });
+
+    // Cleanup on disconnect
     socket.on('disconnect', () => {
       clearInterval(heartbeatInterval);
     });
   });
 
-  // Socket.IO engine events
+  // Socket.IO engine events with enhanced logging
   io.engine.on('connection_error', (err) => {
     logger.error(`❌ Socket.IO engine connection error`, {
       error: err.message,
       type: err.type,
-      code: err.code
+      code: err.code,
+      description: err.description,
+      context: err.context
     });
   });
 
-  // Periodic metrics logging
+  // Enhanced periodic metrics logging
   setInterval(() => {
+    const totalConnections = io.sockets.sockets.size;
+    const securePercentage = totalConnections > 0 ? 
+      Math.round((socketMetrics.secureConnections / totalConnections) * 100) : 0;
+    const proxyPercentage = totalConnections > 0 ? 
+      Math.round((socketMetrics.proxyConnections / totalConnections) * 100) : 0;
+
     logger.info('📊 Socket.IO metrics', {
-      connected: io.sockets.sockets.size,
+      connected: totalConnections,
       metrics: socketMetrics,
-      rooms: io.sockets.adapter.rooms.size
+      rooms: io.sockets.adapter.rooms.size,
+      security: {
+        secureConnections: socketMetrics.secureConnections,
+        securePercentage: `${securePercentage}%`,
+        proxyConnections: socketMetrics.proxyConnections,
+        proxyPercentage: `${proxyPercentage}%`
+      },
+      transports: {
+        websocket: Array.from(io.sockets.sockets.values())
+          .filter(s => s.conn.transport.name === 'websocket').length,
+        polling: Array.from(io.sockets.sockets.values())
+          .filter(s => s.conn.transport.name === 'polling').length
+      }
     });
   }, 60000); // Every minute
 
-  logger.info('✅ Socket.IO initialization complete');
+  // Log SSL/proxy configuration summary
+  logger.info('🔒 Socket.IO SSL/Proxy configuration', {
+    trustProxy: process.env.TRUST_PROXY === 'true',
+    environment: process.env.NODE_ENV || 'development',
+    domain: process.env.DOMAIN || 'localhost',
+    expectedProtocol: process.env.PROTOCOL || 'http',
+    corsOrigin: process.env.CORS_ORIGIN || '*'
+  });
+
+  logger.info('✅ Socket.IO initialization complete with enhanced SSL logging');
 };

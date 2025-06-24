@@ -40,6 +40,23 @@ try {
     }
   });
 
+  // Helper function to determine public URL
+  const getPublicUrl = () => {
+    // Check if we're behind a proxy
+    if (config.security.trustProxy && config.server.proxy?.enabled) {
+      return config.server.proxy.publicUrl || config.app.url;
+    }
+    
+    // Fallback to direct server URL
+    const protocol = config.ssl?.enabled ? 'https' : 'http';
+    return `${protocol}://${config.server.host}:${config.server.port}`;
+  };
+
+  // Helper function to get local URL
+  const getLocalUrl = () => {
+    return `http://${config.server.host}:${config.server.port}`;
+  };
+
   async function main() {
     try {
       console.log('🚀 Starting main function...');
@@ -47,7 +64,10 @@ try {
       console.log('📋 Configuration loaded:', {
         port: config.server.port,
         host: config.server.host,
-        env: config.server.nodeEnv
+        env: config.server.nodeEnv,
+        domain: config.app?.domain,
+        behindProxy: config.security?.trustProxy,
+        sslEnabled: config.ssl?.enabled
       });
 
       console.log('🎯 Initiating bootstrap process...');
@@ -70,6 +90,7 @@ try {
         logger.info('✅ Exception handler initialized with server instance');
       }
 
+      // Enhanced server error handling
       server.on('error', (error) => {
         if (error.code === 'EADDRINUSE') {
           logger?.error?.(`❌ Port ${config.server.port} is already in use`);
@@ -86,34 +107,135 @@ try {
         }
       });
 
+      // Enhanced connection logging for SSL/proxy setup
       server.on('connection', (socket) => {
-        logger?.debug?.('🔌 New connection established', {
+        const connectionInfo = {
           remoteAddress: socket.remoteAddress,
-          remotePort: socket.remotePort
-        });
+          remotePort: socket.remotePort,
+          // Note: socket.encrypted will be false since nginx terminates SSL
+          viaProxy: config.security?.trustProxy || false,
+          encrypted: socket.encrypted || false
+        };
+        
+        logger?.debug?.('🔌 New connection established', connectionInfo);
+
+        // Log SSL-specific details if available
+        if (socket.encrypted) {
+          logger?.debug?.('🔒 Secure connection details', {
+            cipher: socket.getCipher?.()?.name,
+            protocol: socket.getProtocol?.(),
+            authorized: socket.authorized
+          });
+        }
 
         socket.on('error', (err) => {
           logger?.warn?.('⚠️ Socket error', {
             error: err.message,
-            remoteAddress: socket.remoteAddress
+            remoteAddress: socket.remoteAddress,
+            viaProxy: config.security?.trustProxy || false
           });
         });
       });
 
+      // Add TLS-specific error handlers if SSL is enabled
+      if (config.ssl?.enabled) {
+        server.on('tlsClientError', (err, tlsSocket) => {
+          logger?.error?.('❌ TLS Client Error', {
+            error: err.message,
+            code: err.code,
+            remoteAddress: tlsSocket?.remoteAddress
+          });
+        });
+
+        server.on('secureConnection', (tlsSocket) => {
+          logger?.debug?.('🔒 Secure TLS connection established', {
+            remoteAddress: tlsSocket.remoteAddress,
+            authorized: tlsSocket.authorized,
+            cipher: tlsSocket.getCipher?.()?.name
+          });
+        });
+      }
+
+      // Enhanced startup logging with SSL/proxy awareness
+      const publicUrl = getPublicUrl();
+      const localUrl = getLocalUrl();
+
       logger?.info?.('✅ Application started successfully', {
-        url: `http://${config.server.host}:${config.server.port}`,
+        publicUrl: publicUrl,
+        localUrl: localUrl,
+        domain: config.app?.domain,
+        protocol: config.server?.proxy?.protocol || (config.ssl?.enabled ? 'https' : 'http'),
+        behindProxy: config.security?.trustProxy || false,
         pid: process.pid,
         workerId: result.workerId || 'single-process',
         environment: config.server.nodeEnv
       });
 
-      if (process.env.NODE_ENV === 'production' && !process.env.SERVER_URL?.startsWith('https')) {
-        logger?.warn?.('🚨 WARNING: Server is running over HTTP in production mode. Use HTTPS (wss) for WebSocket security!');
+      // Enhanced proxy detection logging
+      if (config.security?.trustProxy) {
+        logger?.info?.('🔄 Running behind reverse proxy', {
+          publicProtocol: config.server?.proxy?.protocol || 'https',
+          localProtocol: 'http',
+          proxyHeaders: 'X-Forwarded-* headers trusted',
+          domain: config.app?.domain
+        });
+      } else {
+        logger?.warn?.('⚠️ Proxy trust disabled - check TRUST_PROXY setting if using nginx/proxy');
       }
 
+      // Enhanced production security checks
+      if (process.env.NODE_ENV === 'production') {
+        const isPublicHttps = publicUrl.startsWith('https');
+        const hasServerUrl = process.env.SERVER_URL || process.env.APP_URL;
+        
+        if (!isPublicHttps) {
+          logger?.error?.('🚨 CRITICAL: Public URL is not HTTPS in production!', {
+            publicUrl: publicUrl,
+            serverUrl: hasServerUrl,
+            recommendation: 'Configure nginx SSL and update APP_URL/SERVER_URL environment variables'
+          });
+        } else {
+          logger?.info?.('🔒 Production server secured with HTTPS', {
+            method: config.security?.trustProxy ? 'via_proxy' : 'direct_ssl',
+            domain: config.app?.domain
+          });
+        }
+
+        // Additional production security warnings
+        if (config.security?.trustProxy && !hasServerUrl?.startsWith('https')) {
+          logger?.warn?.('⚠️ TRUST_PROXY enabled but SERVER_URL/APP_URL not HTTPS - check configuration');
+        }
+
+        // SSL certificate warnings (if using direct SSL)
+        if (config.ssl?.enabled) {
+          if (config.ssl.certificatePath && config.ssl.privateKeyPath) {
+            logger?.info?.('✅ SSL certificates configured for direct HTTPS');
+          } else {
+            logger?.warn?.('⚠️ SSL enabled but certificate paths not configured');
+          }
+        }
+      } else {
+        // Development mode warnings
+        if (!publicUrl.startsWith('https') && config.server.nodeEnv !== 'development') {
+          logger?.warn?.('🚨 Non-production environment running over HTTP');
+        }
+      }
+
+      // HSTS and security headers info
+      if (config.security?.ssl?.hsts?.enabled) {
+        logger?.info?.('🛡️ HSTS security headers enabled', {
+          maxAge: config.security.ssl.hsts.maxAge,
+          includeSubDomains: config.security.ssl.hsts.includeSubDomains,
+          preload: config.security.ssl.hsts.preload
+        });
+      }
+
+      // Health check monitoring with enhanced metrics
       if (config.monitoring?.healthCheckInterval) {
         setInterval(() => {
           const memUsage = process.memoryUsage();
+          const connectionCount = server.listening ? 'active' : 'inactive';
+          
           logger?.debug?.('📊 Application health check', {
             uptime: process.uptime(),
             memory: {
@@ -121,7 +243,12 @@ try {
               heapUsed: `${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`,
               heapTotal: `${Math.round(memUsage.heapTotal / 1024 / 1024)}MB`
             },
-            connections: server.listening ? 'active' : 'inactive'
+            connections: connectionCount,
+            ssl: {
+              enabled: config.ssl?.enabled || false,
+              behindProxy: config.security?.trustProxy || false
+            },
+            socketConnections: io ? io.sockets.sockets.size : 0
           });
         }, config.monitoring.healthCheckInterval);
       }
@@ -133,7 +260,11 @@ try {
       if (logger && logger.error) {
         logger.error('❌ Failed to start application', {
           error: error.message,
-          stack: error.stack
+          stack: error.stack,
+          ssl: {
+            enabled: config.ssl?.enabled || false,
+            behindProxy: config.security?.trustProxy || false
+          }
         });
 
         if (error.isOperational) {
