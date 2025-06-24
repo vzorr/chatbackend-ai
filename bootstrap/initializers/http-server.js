@@ -1,335 +1,334 @@
-// bootstrap/initializers/http-server.js
+// bootstrap/initializers/http-server.js - Supports both HTTP and HTTPS
 const { logger } = require('../../utils/logger');
 const config = require('../../config/config');
-const cluster = require('cluster');
+const fs = require('fs');
+const https = require('https');
+const http = require('http');
 
 async function startHTTPServer(server, io) {
-  const startTime = Date.now();
-  logger.info('🔧 [Server] Starting HTTP/HTTPS server...');
-
+  console.log('🚀 Starting server with SSL/HTTP support');
+  
   try {
-    // Configure server timeout with SSL considerations
-    configureServerTimeouts(server);
+    const PORT = config.server?.port || 5000;
+    const HOST = config.server?.host || 'localhost';
     
-    // Setup SSL-specific server events
-    setupSSLServerEvents(server);
-
-    const PORT = config.server.port;
-    const HOST = config.server.host || '0.0.0.0';
-
-    await new Promise((resolve, reject) => {
-      server.listen(PORT, HOST, (error) => {
-        if (error) {
-          logger.error('❌ [Server] Failed to start server', {
-            error: error.message,
-            port: PORT,
-            host: HOST,
-            ssl: config.ssl?.enabled || false
-          });
-          reject(error);
-          return;
-        }
-
-        const duration = Date.now() - startTime;
-        
-        // Enhanced startup information with SSL context
-        logServerStartup(HOST, PORT, duration);
-        
-        // Log service endpoints with SSL awareness
-        logServiceEndpoints(HOST, PORT);
-        
-        // Log enabled features
-        logEnabledFeatures();
-        
-        // Log service status with SSL context
-        logServiceStatus();
-        
-        resolve();
-      });
+    console.log('🔍 Server configuration:', {
+      port: PORT,
+      host: HOST,
+      sslEnabled: config.ssl?.enabled || false,
+      behindProxy: config.security?.trustProxy || false,
+      environment: config.server?.nodeEnv || 'development'
     });
 
-    // Setup enhanced connection monitoring with SSL awareness
-    setupEnhancedConnectionMonitoring(server, io);
+    // Determine server mode
+    const shouldUseHTTPS = config.ssl?.enabled && 
+                          config.ssl?.certificatePath && 
+                          config.ssl?.privateKeyPath;
+
+    if (shouldUseHTTPS) {
+      console.log('🔒 Starting in HTTPS mode (direct SSL)');
+      await startHTTPSServer(server, io, HOST, PORT);
+    } else {
+      console.log('🌐 Starting in HTTP mode (proxy SSL or no SSL)');
+      await startHTTPOnlyServer(server, io, HOST, PORT);
+    }
+
+    // Setup connection monitoring (safe)
+    setupConnectionMonitoring(server, io);
+    
+    // Log final status
+    logServerStatus(HOST, PORT, shouldUseHTTPS);
     
   } catch (error) {
-    logger.error('❌ [Server] Server startup failed', {
-      error: error.message,
-      stack: error.stack,
-      ssl: config.ssl?.enabled || false
-    });
+    console.error('❌ Server startup failed:', error.message);
+    if (logger?.error) {
+      logger.error('❌ Server startup failed', {
+        error: error.message,
+        stack: error.stack
+      });
+    }
     throw error;
   }
 }
 
-function configureServerTimeouts(server) {
-  // Enhanced timeout configuration for SSL connections
-  const timeouts = {
-    timeout: config.server?.timeout || 120000, // 2 minutes
-    keepAliveTimeout: config.server?.keepAliveTimeout || 65000,
-    headersTimeout: config.server?.headersTimeout || 66000,
-    requestTimeout: config.server?.requestTimeout || 30000
-  };
+async function startHTTPSServer(server, io, HOST, PORT) {
+  console.log('🔒 Loading SSL certificates and starting HTTPS server');
   
-  // Apply timeouts
-  server.timeout = timeouts.timeout;
-  server.keepAliveTimeout = timeouts.keepAliveTimeout;
-  server.headersTimeout = timeouts.headersTimeout;
-  
-  // Set request timeout if available (Node.js 14.11+)
-  if (server.requestTimeout !== undefined) {
-    server.requestTimeout = timeouts.requestTimeout;
+  try {
+    // Load SSL certificates safely
+    const sslOptions = await loadSSLCertificates();
+    
+    // Create HTTPS server wrapper
+    const httpsServer = https.createServer(sslOptions, server);
+    
+    // Start HTTPS server
+    await new Promise((resolve, reject) => {
+      httpsServer.listen(PORT, HOST, (error) => {
+        if (error) {
+          console.error('❌ HTTPS server failed to start:', error.message);
+          reject(error);
+          return;
+        }
+
+        console.log(`✅ HTTPS Server listening on https://${HOST}:${PORT}`);
+        resolve();
+      });
+    });
+
+    // Setup SSL-specific event handlers
+    setupSSLEventHandlers(httpsServer);
+    
+  } catch (error) {
+    console.error('❌ HTTPS server startup failed:', error.message);
+    throw error;
   }
-  
-  logger.info('✅ [Server] Server timeouts configured', timeouts);
 }
 
-function setupSSLServerEvents(server) {
-  // Standard error handlers
-  server.on('error', (error) => {
-    logger.error('❌ [Server] Server error', {
-      error: error.message,
-      code: error.code,
-      stack: error.stack
+async function startHTTPOnlyServer(server, io, HOST, PORT) {
+  console.log('🌐 Starting HTTP server');
+  
+  await new Promise((resolve, reject) => {
+    server.listen(PORT, HOST, (error) => {
+      if (error) {
+        console.error('❌ HTTP server failed to start:', error.message);
+        reject(error);
+        return;
+      }
+
+      const proxyInfo = config.security?.trustProxy ? ' (behind proxy)' : '';
+      console.log(`✅ HTTP Server listening on http://${HOST}:${PORT}${proxyInfo}`);
+      resolve();
     });
   });
+}
+
+async function loadSSLCertificates() {
+  console.log('📜 Loading SSL certificates');
   
-  // SSL-specific event handlers (for HTTPS servers)
-  if (server.listening && server.cert) {
-    server.on('tlsClientError', (err, tlsSocket) => {
-      logger.error('❌ [SSL] TLS client error', {
+  try {
+    const sslOptions = {};
+    
+    // Load private key (required)
+    if (config.ssl?.privateKeyPath) {
+      if (!fs.existsSync(config.ssl.privateKeyPath)) {
+        throw new Error(`Private key file not found: ${config.ssl.privateKeyPath}`);
+      }
+      console.log('🔑 Loading private key from:', config.ssl.privateKeyPath);
+      sslOptions.key = fs.readFileSync(config.ssl.privateKeyPath, 'utf8');
+    } else {
+      throw new Error('SSL private key path not configured');
+    }
+    
+    // Load certificate (required)
+    if (config.ssl?.certificatePath) {
+      if (!fs.existsSync(config.ssl.certificatePath)) {
+        throw new Error(`Certificate file not found: ${config.ssl.certificatePath}`);
+      }
+      console.log('📜 Loading certificate from:', config.ssl.certificatePath);
+      sslOptions.cert = fs.readFileSync(config.ssl.certificatePath, 'utf8');
+    } else {
+      throw new Error('SSL certificate path not configured');
+    }
+    
+    // Load CA certificate (optional)
+    if (config.ssl?.caPath) {
+      if (fs.existsSync(config.ssl.caPath)) {
+        console.log('🏛️ Loading CA certificate from:', config.ssl.caPath);
+        sslOptions.ca = fs.readFileSync(config.ssl.caPath, 'utf8');
+      } else {
+        console.warn('⚠️ CA certificate file not found:', config.ssl.caPath);
+      }
+    }
+    
+    // Optional SSL settings (with safe defaults)
+    if (config.ssl?.passphrase) {
+      sslOptions.passphrase = config.ssl.passphrase;
+    }
+    
+    if (config.ssl?.secureProtocol) {
+      sslOptions.secureProtocol = config.ssl.secureProtocol;
+    }
+    
+    if (config.ssl?.ciphers) {
+      sslOptions.ciphers = config.ssl.ciphers;
+    }
+    
+    if (config.ssl?.honorCipherOrder !== undefined) {
+      sslOptions.honorCipherOrder = config.ssl.honorCipherOrder;
+    }
+    
+    // Client certificate options (optional)
+    if (config.ssl?.requestCert !== undefined) {
+      sslOptions.requestCert = config.ssl.requestCert;
+    }
+    
+    if (config.ssl?.rejectUnauthorized !== undefined) {
+      sslOptions.rejectUnauthorized = config.ssl.rejectUnauthorized;
+    }
+    
+    console.log('✅ SSL certificates loaded successfully');
+    return sslOptions;
+    
+  } catch (error) {
+    console.error('❌ Failed to load SSL certificates:', error.message);
+    throw new Error(`SSL certificate loading failed: ${error.message}`);
+  }
+}
+
+function setupSSLEventHandlers(httpsServer) {
+  console.log('🔒 Setting up SSL event handlers');
+  
+  // TLS client errors
+  httpsServer.on('tlsClientError', (err, tlsSocket) => {
+    console.warn('⚠️ TLS client error:', err.message);
+    if (logger?.warn) {
+      logger.warn('TLS Client Error', {
         error: err.message,
         code: err.code,
-        remoteAddress: tlsSocket?.remoteAddress,
-        remotePort: tlsSocket?.remotePort
+        remoteAddress: tlsSocket?.remoteAddress
       });
-    });
-    
-    server.on('secureConnect', (cleartextStream) => {
-      logger.debug('🔒 [SSL] Secure connection established', {
-        remoteAddress: cleartextStream.remoteAddress,
-        cipher: cleartextStream.getCipher?.(),
-        protocol: cleartextStream.getProtocol?.(),
-        authorized: cleartextStream.authorized
+    }
+  });
+  
+  // Secure connections
+  httpsServer.on('secureConnection', (tlsSocket) => {
+    console.log('🔒 Secure connection from:', tlsSocket.remoteAddress);
+    if (logger?.debug) {
+      logger.debug('Secure TLS connection established', {
+        remoteAddress: tlsSocket.remoteAddress,
+        authorized: tlsSocket.authorized,
+        cipher: tlsSocket.getCipher?.()?.name,
+        protocol: tlsSocket.getProtocol?.()
       });
-    });
-    
-    server.on('newSession', (sessionId, sessionData, callback) => {
-      logger.debug('🔑 [SSL] New TLS session created', {
-        sessionId: sessionId.toString('hex'),
+    }
+  });
+  
+  // New session events (optional monitoring)
+  httpsServer.on('newSession', (sessionId, sessionData, callback) => {
+    if (logger?.debug) {
+      logger.debug('New TLS session created', {
+        sessionId: sessionId.toString('hex').substring(0, 16) + '...',
         sessionSize: sessionData.length
       });
-      callback();
-    });
-  }
-  
-  logger.info('✅ [Server] SSL event handlers configured');
-}
-
-function logServerStartup(host, port, duration) {
-  const publicUrl = getPublicUrl(host, port);
-  const localUrl = getLocalUrl(host, port);
-  const isSecure = config.ssl?.enabled || config.security?.trustProxy;
-  
-  logger.info('🚀 [Server] Server is running!', {
-    publicUrl: publicUrl,
-    localUrl: localUrl,
-    protocol: isSecure ? 'https' : 'http',
-    ssl: {
-      enabled: config.ssl?.enabled || false,
-      direct: config.ssl?.enabled && config.ssl?.certificatePath,
-      behindProxy: config.security?.trustProxy || false
-    },
-    environment: config.server.nodeEnv,
-    pid: process.pid,
-    workerId: cluster.worker?.id,
-    duration: `${duration}ms`,
-    nodeVersion: process.version,
-    domain: config.app?.domain
+    }
+    callback();
   });
   
-  // Enhanced production warnings
-  if (config.server.nodeEnv === 'production') {
-    if (!publicUrl.startsWith('https')) {
-      logger.error('🚨 [Server] CRITICAL: Public URL is not HTTPS in production!', {
-        publicUrl: publicUrl,
-        recommendation: 'Configure SSL certificates or update proxy configuration'
-      });
-    } else {
-      logger.info('🔒 [Server] Production server secured with HTTPS', {
-        method: config.security?.trustProxy ? 'proxy_termination' : 'direct_ssl',
-        domain: config.app?.domain
-      });
-    }
-  }
+  console.log('✅ SSL event handlers configured');
 }
 
-function getPublicUrl(host, port) {
-  // Check if we have a configured public URL
-  if (config.app?.url) {
-    return config.app.url;
-  }
-  
-  // Check if we're behind a proxy
-  if (config.security?.trustProxy && config.server?.proxy?.publicUrl) {
-    return config.server.proxy.publicUrl;
-  }
-  
-  // Determine protocol
-  const protocol = config.ssl?.enabled ? 'https' : 'http';
-  const displayHost = host === '0.0.0.0' ? 'localhost' : host;
-  const defaultPort = protocol === 'https' ? 443 : 80;
-  const portSuffix = port === defaultPort ? '' : `:${port}`;
-  
-  return `${protocol}://${displayHost}${portSuffix}`;
-}
-
-function getLocalUrl(host, port) {
-  const displayHost = host === '0.0.0.0' ? 'localhost' : host;
-  return `http://${displayHost}:${port}`;
-}
-
-function logServiceEndpoints(host, port) {
-  const baseUrl = getPublicUrl(host, port);
-  
-  const endpoints = {
-    api: baseUrl,
-    health: `${baseUrl}/health`,
-    socketio: `${baseUrl}${config.server.socketPath || '/socket.io'}`
-  };
-
-  // Add optional endpoints if they're enabled
-  if (config.bullBoard?.enabled) {
-    endpoints.admin = `${baseUrl}${config.bullBoard.basePath || '/admin/queues'}`;
-  }
-  
-  if (config.development?.testMode || config.server.nodeEnv !== 'production') {
-    endpoints.docs = `${baseUrl}/api-docs`;
-  }
-  
-  if (config.monitoring?.metrics?.enabled) {
-    endpoints.metrics = `${baseUrl}/metrics`;
-  }
-
-  logger.info('📚 [Server] Service endpoints available:', {
-    endpoints,
-    secure: baseUrl.startsWith('https'),
-    websocket: endpoints.socketio.replace('http', 'ws')
-  });
-}
-
-function logEnabledFeatures() {
-  const enabledFeatures = Object.entries(config.features || {})
-    .filter(([_, enabled]) => enabled)
-    .map(([feature]) => feature);
-  
-  if (enabledFeatures.length > 0) {
-    logger.info('🎯 [Server] Enabled features', { 
-      features: enabledFeatures,
-      count: enabledFeatures.length,
-      ssl: config.ssl?.enabled || config.security?.trustProxy
-    });
-  }
-}
-
-function logServiceStatus() {
-  try {
-    // Safely import notification service
-    let notificationService;
-    try {
-      notificationService = require('../../services/notifications/notificationService');
-    } catch (err) {
-      logger.warn('⚠️ [Server] Notification service not available', { error: err.message });
-    }
-    
-    const serviceStatus = {
-      database: 'connected',
-      redis: config.redis?.host ? 'configured' : 'not_configured',
-      cache: config.redis?.host ? 'enabled' : 'disabled',
-      notifications: notificationService?.initialized ? 'initialized' : 'disabled',
-      fcm: notificationService?.providers?.has('FCM') ? 'enabled' : 'disabled',
-      apn: notificationService?.providers?.has('APN') ? 'enabled' : 'disabled',
-      email: config.notifications?.email?.enabled ? 'enabled' : 'disabled',
-      search: config.features?.search ? 'enabled' : 'disabled',
-      ssl: {
-        direct: config.ssl?.enabled || false,
-        proxy: config.security?.trustProxy || false,
-        hsts: config.security?.ssl?.hsts?.enabled || false
-      }
-    };
-
-    logger.info('📊 [Server] Service status', serviceStatus);
-  } catch (error) {
-    logger.warn('⚠️ [Server] Failed to gather service status', {
-      error: error.message
-    });
-  }
-}
-
-function setupEnhancedConnectionMonitoring(server, io) {
+function setupConnectionMonitoring(server, io) {
   let connectionCount = 0;
-  const connectionStats = {
-    http: 0,
-    https: 0,
-    websocket: 0,
-    total: 0
-  };
   
+  // Monitor HTTP/HTTPS connections
   server.on('connection', (socket) => {
     connectionCount++;
-    connectionStats.total++;
-    
-    const isSecure = socket.encrypted || false;
-    if (isSecure) {
-      connectionStats.https++;
-    } else {
-      connectionStats.http++;
-    }
     
     socket.on('close', () => {
       connectionCount--;
     });
+    
+    socket.on('error', (err) => {
+      console.warn('⚠️ Socket error:', err.message);
+      if (logger?.warn) {
+        logger.warn('Socket error', {
+          error: err.message,
+          remoteAddress: socket.remoteAddress
+        });
+      }
+    });
   });
   
-  // Monitor Socket.IO connections separately
-  if (io) {
+  // Monitor Socket.IO connections (if available)
+  if (io && typeof io.on === 'function') {
     io.on('connection', (socket) => {
-      connectionStats.websocket++;
+      if (logger?.debug) {
+        logger.debug('Socket.IO connection established', {
+          socketId: socket.id,
+          remoteAddress: socket.handshake?.address
+        });
+      }
       
-      socket.on('disconnect', () => {
-        connectionStats.websocket--;
+      socket.on('disconnect', (reason) => {
+        if (logger?.debug) {
+          logger.debug('Socket.IO disconnection', {
+            socketId: socket.id,
+            reason: reason
+          });
+        }
       });
     });
   }
   
-  // Enhanced periodic logging with SSL context
-  setInterval(() => {
-    const memUsage = process.memoryUsage();
-    const uptime = process.uptime();
-    
-    logger.info('📊 [Server] Enhanced connection statistics', {
-      connections: {
-        active: connectionCount,
-        ...connectionStats,
-        socketio: io ? io.sockets.sockets.size : 0
-      },
-      performance: {
-        uptime: `${Math.floor(uptime / 60)}m ${Math.floor(uptime % 60)}s`,
-        memory: {
-          rss: `${Math.round(memUsage.rss / 1024 / 1024)}MB`,
-          heapUsed: `${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`,
-          heapTotal: `${Math.round(memUsage.heapTotal / 1024 / 1024)}MB`
-        }
-      },
-      security: {
-        httpsConnections: connectionStats.https,
-        httpsPercentage: connectionStats.total > 0 ? 
-          `${Math.round((connectionStats.https / connectionStats.total) * 100)}%` : '0%',
-        wsConnections: connectionStats.websocket
-      }
-    });
-  }, config.monitoring?.statsInterval || 300000); // 5 minutes
+  console.log('✅ Connection monitoring configured');
+}
+
+function logServerStatus(HOST, PORT, isHTTPS) {
+  const isBehindProxy = config.security?.trustProxy;
   
-  logger.info('✅ [Server] Enhanced connection monitoring configured');
+  // Determine URLs
+  let publicUrl, localUrl, sslMode;
+  
+  if (isHTTPS) {
+    publicUrl = `https://${config.app?.domain || HOST}${PORT === 443 ? '' : `:${PORT}`}`;
+    localUrl = `https://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`;
+    sslMode = 'Direct SSL (Node.js)';
+  } else if (isBehindProxy) {
+    publicUrl = config.app?.url || `https://${config.app?.domain || HOST}`;
+    localUrl = `http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`;
+    sslMode = 'Proxy SSL (nginx)';
+  } else {
+    publicUrl = `http://${HOST === '0.0.0.0' ? 'localhost' : HOST}${PORT === 80 ? '' : `:${PORT}`}`;
+    localUrl = publicUrl;
+    sslMode = 'No SSL';
+  }
+  
+  console.log('');
+  console.log('🎉 ===== SERVER READY =====');
+  console.log(`🌐 Public URL:  ${publicUrl}`);
+  console.log(`🏠 Local URL:   ${localUrl}`);
+  console.log(`🎯 Health:      ${localUrl}/health`);
+  console.log(`🔒 SSL Mode:    ${sslMode}`);
+  console.log(`🌍 Environment: ${config.server?.nodeEnv || 'development'}`);
+  console.log(`📊 Process:     PID ${process.pid}`);
+  console.log('===============================');
+  console.log('');
+  
+  // Additional info based on mode
+  if (isBehindProxy && !isHTTPS) {
+    console.log('💡 nginx terminates SSL → forwards HTTP to Node.js');
+    console.log('');
+  }
+  
+  if (logger?.info) {
+    logger.info('🎉 Server ready and listening', {
+      publicUrl,
+      localUrl,
+      ssl: {
+        enabled: isHTTPS || isBehindProxy,
+        direct: isHTTPS,
+        behindProxy: isBehindProxy,
+        mode: sslMode
+      },
+      environment: config.server?.nodeEnv || 'development',
+      pid: process.pid
+    });
+  }
+  
+  // Production warnings
+  if (config.server?.nodeEnv === 'production') {
+    if (!publicUrl.startsWith('https')) {
+      console.warn('🚨 WARNING: Production server not using HTTPS!');
+      if (logger?.warn) {
+        logger.warn('Production server not using HTTPS', {
+          publicUrl,
+          recommendation: 'Configure SSL certificates or proxy SSL termination'
+        });
+      }
+    } else {
+      console.log(`✅ Production SSL secured via ${isHTTPS ? 'direct SSL' : 'nginx proxy'}`);
+    }
+  }
 }
 
 module.exports = { startHTTPServer };
