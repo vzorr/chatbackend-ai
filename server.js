@@ -43,8 +43,8 @@ try {
   // Helper function to determine public URL
   const getPublicUrl = () => {
     // Check if we're behind a proxy
-    if (config.security.trustProxy && config.server.proxy?.enabled) {
-      return config.server.proxy.publicUrl || config.app.url;
+    if (config.security?.trustProxy && config.server?.proxy?.enabled) {
+      return config.server.proxy.publicUrl || config.app?.url;
     }
     
     // Fallback to direct server URL
@@ -72,26 +72,55 @@ try {
 
       console.log('🎯 Initiating bootstrap process...');
       const result = await bootstrap.start();
+      
+      console.log('🔍 DEBUG - Bootstrap completed successfully!');
+      console.log('🔍 DEBUG - Bootstrap result:', {
+        isPrimary: result?.isPrimary,
+        hasApp: !!result?.app,
+        hasServer: !!result?.server,
+        hasIO: !!result?.io,
+        workerId: result?.workerId
+      });
 
-      if (result.isPrimary) {
+      if (result?.isPrimary) {
+        console.log('🔍 DEBUG - Primary process detected, returning early');
         if (logger && logger.info) {
           logger.info('✅ Primary process initialized successfully', {
             pid: process.pid,
-            workers: config.cluster.workerCount
+            workers: config.cluster?.workerCount
           });
         }
         return;
       }
 
-      const { app, server, io } = result;
+      console.log('🔍 DEBUG - Extracting components from bootstrap result...');
+      const { app, server, io } = result || {};
+      
+      if (!app || !server) {
+        console.error('🔍 DEBUG - Missing critical components!');
+        console.error('🔍 DEBUG - App exists:', !!app);
+        console.error('🔍 DEBUG - Server exists:', !!server);
+        throw new Error('Bootstrap did not return required app and server instances');
+      }
 
-      exceptionHandler.initialize(server);
+      console.log('🔍 DEBUG - Components extracted successfully');
+      console.log('🔍 DEBUG - About to initialize exception handler...');
+
+      try {
+        exceptionHandler.initialize(server);
+        console.log('🔍 DEBUG - Exception handler initialized');
+      } catch (exceptionError) {
+        console.error('🔍 DEBUG - Exception handler init failed:', exceptionError.message);
+      }
+
       if (logger && logger.info) {
         logger.info('✅ Exception handler initialized with server instance');
       }
 
+      console.log('🔍 DEBUG - Setting up server error handlers...');
       // Enhanced server error handling
       server.on('error', (error) => {
+        console.log('🔍 DEBUG - Server error occurred:', error.code);
         if (error.code === 'EADDRINUSE') {
           logger?.error?.(`❌ Port ${config.server.port} is already in use`);
           process.exit(1);
@@ -107,6 +136,7 @@ try {
         }
       });
 
+      console.log('🔍 DEBUG - Setting up connection handlers...');
       // Enhanced connection logging for SSL/proxy setup
       server.on('connection', (socket) => {
         const connectionInfo = {
@@ -137,6 +167,7 @@ try {
         });
       });
 
+      console.log('🔍 DEBUG - Setting up TLS handlers (if needed)...');
       // Add TLS-specific error handlers if SSL is enabled
       if (config.ssl?.enabled) {
         server.on('tlsClientError', (err, tlsSocket) => {
@@ -156,10 +187,16 @@ try {
         });
       }
 
+      console.log('🔍 DEBUG - Generating URLs...');
       // Enhanced startup logging with SSL/proxy awareness
       const publicUrl = getPublicUrl();
       const localUrl = getLocalUrl();
+      
+      console.log('🔍 DEBUG - URLs generated successfully');
+      console.log('🔍 DEBUG - Public URL:', publicUrl);
+      console.log('🔍 DEBUG - Local URL:', localUrl);
 
+      console.log('🔍 DEBUG - Logging application started message...');
       logger?.info?.('✅ Application started successfully', {
         publicUrl: publicUrl,
         localUrl: localUrl,
@@ -171,8 +208,11 @@ try {
         environment: config.server.nodeEnv
       });
 
+      console.log('🔍 DEBUG - Application started message logged');
+      
       // Enhanced proxy detection logging
       if (config.security?.trustProxy) {
+        console.log('🔍 DEBUG - Logging proxy information...');
         logger?.info?.('🔄 Running behind reverse proxy', {
           publicProtocol: config.server?.proxy?.protocol || 'https',
           localProtocol: 'http',
@@ -183,6 +223,7 @@ try {
         logger?.warn?.('⚠️ Proxy trust disabled - check TRUST_PROXY setting if using nginx/proxy');
       }
 
+      console.log('🔍 DEBUG - Checking production security settings...');
       // Enhanced production security checks
       if (process.env.NODE_ENV === 'production') {
         const isPublicHttps = publicUrl.startsWith('https');
@@ -221,6 +262,7 @@ try {
         }
       }
 
+      console.log('🔍 DEBUG - Checking HSTS configuration...');
       // HSTS and security headers info
       if (config.security?.ssl?.hsts?.enabled) {
         logger?.info?.('🛡️ HSTS security headers enabled', {
@@ -230,6 +272,7 @@ try {
         });
       }
 
+      console.log('🔍 DEBUG - Setting up health check monitoring...');
       // Health check monitoring with enhanced metrics
       if (config.monitoring?.healthCheckInterval) {
         setInterval(() => {
@@ -248,14 +291,36 @@ try {
               enabled: config.ssl?.enabled || false,
               behindProxy: config.security?.trustProxy || false
             },
-            socketConnections: io ? io.sockets.sockets.size : 0
+            socketConnections: io ? io.sockets?.sockets?.size : 0
           });
         }, config.monitoring.healthCheckInterval);
+        console.log('🔍 DEBUG - Health check monitoring enabled');
       }
 
+      console.log('🔍 DEBUG - Exporting module...');
       module.exports = { app, server, io };
 
+      // Final success messages
+      console.log('');
+      console.log('🎉 ===== SERVER STARTUP COMPLETE =====');
+      console.log('✅ Server is running and ready to accept connections!');
+      console.log('');
+      console.log('📊 Server Information:');
+      console.log(`   🌐 Public URL: ${publicUrl}`);
+      console.log(`   🏠 Local URL:  ${localUrl}`);
+      console.log(`   🎯 Health:     ${localUrl}/health`);
+      console.log(`   🔧 Process:    PID ${process.pid}`);
+      console.log(`   🏷️  Worker:     ${result.workerId || 'single-process'}`);
+      console.log(`   🌍 Environment: ${config.server.nodeEnv}`);
+      console.log('');
+      console.log('💡 Test the server:');
+      console.log(`   curl ${localUrl}/health`);
+      console.log('');
+      console.log('🛑 Stop the server: Ctrl+C');
+      console.log('🔍 DEBUG - All startup tasks completed successfully!');
+
     } catch (error) {
+      console.error('🔍 DEBUG - Error in main function:', error);
       console.error('❌ Failed to start application:', error);
       if (logger && logger.error) {
         logger.error('❌ Failed to start application', {
@@ -278,21 +343,27 @@ try {
   }
 
   const gracefulShutdown = async (signal) => {
+    console.log(`🛑 Received ${signal}, initiating graceful shutdown...`);
     logger?.info?.(`🛑 Received ${signal}, initiating graceful shutdown...`);
 
     const shutdownTimeout = setTimeout(() => {
+      console.error('❌ Graceful shutdown timeout exceeded, forcing exit');
       logger?.error?.('❌ Graceful shutdown timeout exceeded, forcing exit');
       process.exit(1);
     }, 30000);
 
     try {
       if (bootstrap && typeof bootstrap.cleanup === 'function') {
+        console.log('🧹 Running bootstrap cleanup...');
         await bootstrap.cleanup();
+        console.log('✅ Bootstrap cleanup completed');
       }
       clearTimeout(shutdownTimeout);
+      console.log('✅ Graceful shutdown completed');
       logger?.info?.('✅ Graceful shutdown completed');
       process.exit(0);
     } catch (error) {
+      console.error('❌ Error during graceful shutdown:', error);
       logger?.error?.('❌ Error during graceful shutdown', {
         error: error.message,
         stack: error.stack
