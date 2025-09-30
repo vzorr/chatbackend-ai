@@ -178,8 +178,29 @@ function setupCompressionMiddleware(app) {
   });
 }
 
+
 function setupCorsMiddleware(app) {
   logger.info('🔧 [Middleware] Setting up CORS middleware...');
+  
+  // Check if we're behind a proxy (Nginx)
+  // You can use an environment variable to control this
+  const isBehindProxy = true;
+  
+  if (isBehindProxy) {
+    // When behind Nginx, don't add CORS headers - let Nginx handle it
+    logger.info('✅ [Middleware] Running behind proxy (Nginx) - CORS handled by proxy');
+    
+    // Still need to handle OPTIONS requests, but without adding headers
+    app.options('*', (req, res) => {
+      // Nginx will add the CORS headers
+      res.sendStatus(200);
+    });
+    
+    return;
+  }
+  
+  // Only add CORS middleware for local development or when not behind proxy
+  logger.info('🔧 [Middleware] Adding CORS middleware for direct access...');
   
   const corsOptions = {
     origin: (origin, callback) => {
@@ -204,7 +225,15 @@ function setupCorsMiddleware(app) {
     },
     credentials: config.cors?.credentials ?? true,
     methods: config.cors?.methods || ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-    allowedHeaders: config.cors?.allowedHeaders || ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-Key', 'x-environment'],
+    allowedHeaders: config.cors?.allowedHeaders || [
+      'Content-Type', 
+      'Authorization', 
+      'X-Requested-With', 
+      'X-API-Key', 
+      'X-Environment',
+      'X-App-Version',
+      'X-Platform'
+    ],
     exposedHeaders: config.cors?.exposedHeaders || ['X-Correlation-ID', 'X-RateLimit-Limit', 'X-RateLimit-Remaining'],
     maxAge: config.cors?.maxAge || 86400,
     // Enhanced options for secure connections
@@ -218,7 +247,8 @@ function setupCorsMiddleware(app) {
     origin: config.cors?.origin || config.server.corsOrigin,
     credentials: corsOptions.credentials,
     maxAge: corsOptions.maxAge,
-    secure: config.ssl?.enabled || config.security?.trustProxy
+    secure: config.ssl?.enabled || config.security?.trustProxy,
+    isBehindProxy: false
   });
 }
 
