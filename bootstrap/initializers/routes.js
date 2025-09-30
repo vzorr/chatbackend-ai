@@ -96,7 +96,7 @@ function setupAPIRoutes(app) {
   app.use('/api/v1/users', userRoutes);
   app.use('/api/v1/conversations', conversationRoutes);
   app.use('/api/v1/messages', messageRoutes);
-  app.use('/api/v1/admin', adminRoutes);
+  //app.use('/api/v1/admin', adminRoutes);
   app.use('/api/v1/notifications', notificationsRoutes);
   
   logger.info('✅ [Routes] API routes configured', {
