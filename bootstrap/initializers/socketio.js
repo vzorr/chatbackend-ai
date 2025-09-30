@@ -11,11 +11,11 @@ async function initializeSocketIO(server) {
   try {
     // Determine CORS origin with SSL awareness
     const corsOrigin = getCorsOrigin();
-    
+    const originsMultiple = corsOrigin.split(',').map(origin => origin.trim());
     // Create Socket.IO instance with enhanced SSL configuration
     const io = new Server(server, {
       cors: {
-        origin: corsOrigin,
+        origin: originsMultiple,
         methods: ['GET', 'POST'],
         credentials: config.cors?.credentials ?? true,
         allowedHeaders: ['Authorization', 'Content-Type', 'X-Requested-With']

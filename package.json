@@ -35,7 +35,7 @@
     "env:check": "node -e \"console.log('Environment variables:', {NODE_ENV: process.env.NODE_ENV, SSL_ENABLED: process.env.SSL_ENABLED, TRUST_PROXY: process.env.TRUST_PROXY, DOMAIN: process.env.DOMAIN})\"",
     "pm2:start": "pm2 start ecosystem.config.js",
     "pm2:stop": "pm2 stop vortexhive-chat",
-    "pm2:restart": "pm2 restart vortexhive-chat", 
+    "pm2:restart": "pm2 restart vortexhive-chat",
     "pm2:logs": "pm2 logs vortexhive-chat",
     "pm2:status": "pm2 status"
   },
@@ -56,6 +56,7 @@
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "express-rate-limit": "^7.1.5",
+    "express-validator": "^7.2.1",
     "firebase-admin": "^11.11.0",
     "flat": "^6.0.1",
     "handlebars": "^4.7.8",

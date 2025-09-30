@@ -184,7 +184,7 @@ function setupCorsMiddleware(app) {
   const corsOptions = {
     origin: (origin, callback) => {
       // Allow requests with no origin (mobile apps, server-to-server)
-      if (!origin) return callback(null, true);
+      if (!origin) return callback(null, origin);
       
       // Use enhanced CORS configuration
       const allowedOrigins = config.cors?.origin ? 
@@ -204,7 +204,7 @@ function setupCorsMiddleware(app) {
     },
     credentials: config.cors?.credentials ?? true,
     methods: config.cors?.methods || ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-    allowedHeaders: config.cors?.allowedHeaders || ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-Key'],
+    allowedHeaders: config.cors?.allowedHeaders || ['Content-Type', 'Authorization', 'X-Requested-With', 'X-API-Key', 'x-environment'],
     exposedHeaders: config.cors?.exposedHeaders || ['X-Correlation-ID', 'X-RateLimit-Limit', 'X-RateLimit-Remaining'],
     maxAge: config.cors?.maxAge || 86400,
     // Enhanced options for secure connections

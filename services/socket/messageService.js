@@ -356,8 +356,8 @@ async createNewConversation(senderId, receiverId, jobId = null, jobTitle = null)
       }
     }
     
-    const transaction = await db.sequelize.transaction();
-    
+    //const transaction = await db.sequelize.transaction();
+    const transaction = await Conversation.sequelize.transaction();
     try {
       // Create conversation
       await Conversation.create(conversationData, { transaction });
