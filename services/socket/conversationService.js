@@ -123,7 +123,12 @@ class ConversationService {
           })
       );
       
-      console.log ("Socket connected - returning user " + userId  + conversations);
+      logger.info('Socket connected - returning user conversations', {
+                   userId,
+                   conversationCount: conversations.length,
+                    conversationIds: conversations.map(c => c.id)
+      });
+
       return conversations;
     } catch (error) {
       logger.error('Error getting user conversations', {
