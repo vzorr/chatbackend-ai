@@ -2,17 +2,16 @@
 const { logger } = require('../../utils/logger');
 const { Server } = require('socket.io');
 const config = require('../../config/config');
-const socketInitializer = require('../../socket/socketInitializer'); // Your existing file
+const socketInitializer = require('../../socket/socketInitializer');
 
 async function initializeSocketIO(server) {
   const startTime = Date.now();
   logger.info('🔧 [SocketIO] Starting Socket.IO initialization...');
 
   try {
-    // Determine CORS origin with SSL awareness
     const corsOrigin = getCorsOrigin();
     const originsMultiple = corsOrigin.split(',').map(origin => origin.trim());
-    // Create Socket.IO instance with enhanced SSL configuration
+    
     const io = new Server(server, {
       cors: {
         origin: originsMultiple,
@@ -20,14 +19,12 @@ async function initializeSocketIO(server) {
         credentials: config.cors?.credentials ?? true,
         allowedHeaders: ['Authorization', 'Content-Type', 'X-Requested-With']
       },
-      // Enhanced connection settings
       pingTimeout: config.socketio?.pingTimeout || 30000,
       pingInterval: config.socketio?.pingInterval || 10000,
       maxHttpBufferSize: config.socketio?.maxBuffer || 1e6,
       path: config.server.socketPath || '/socket.io',
       transports: config.socketio?.transports || ['websocket', 'polling'],
       allowEIO3: true,
-      // Enhanced compression for better performance over SSL
       perMessageDeflate: {
         threshold: 1024,
         zlibDeflateOptions: {
@@ -38,19 +35,16 @@ async function initializeSocketIO(server) {
       httpCompression: {
         threshold: 1024
       },
-      // SSL-specific settings
       upgradeTimeout: 10000,
       allowUpgrades: true,
-      // Enhanced cookie settings for secure connections
       cookie: config.ssl?.enabled || config.security?.trustProxy ? {
         name: 'io',
         httpOnly: true,
         secure: true,
         sameSite: 'strict'
       } : false,
-      // Connection state recovery (Socket.IO v4.6+)
       connectionStateRecovery: {
-        maxDisconnectionDuration: 2 * 60 * 1000, // 2 minutes
+        maxDisconnectionDuration: 2 * 60 * 1000,
         skipMiddlewares: true
       }
     });
@@ -66,10 +60,11 @@ async function initializeSocketIO(server) {
       }
     });
 
-    // Add SSL-specific event listeners
+    // ===== ENHANCED DEBUGGING =====
+    setupEnhancedDebugging(io);
     setupSSLEventListeners(io);
     
-    // Use your existing socketInitializer with enhanced features
+    // Use existing socketInitializer
     await socketInitializer(io);
     
     const duration = Date.now() - startTime;
@@ -93,31 +88,127 @@ async function initializeSocketIO(server) {
   }
 }
 
+function setupEnhancedDebugging(io) {
+  logger.info('🔧 [SocketIO DEBUG] Setting up enhanced debugging...');
+  
+  // Track all connections
+  const connectionMap = new Map();
+  
+  // Monitor all socket connections
+  io.on('connection', (socket) => {
+    const connectionId = `${socket.id}-${Date.now()}`;
+    connectionMap.set(socket.id, {
+      connectionId,
+      connectedAt: new Date(),
+      userId: socket.user?.id,
+      handshake: {
+        headers: socket.handshake.headers,
+        query: socket.handshake.query,
+        auth: socket.handshake.auth
+      }
+    });
+    
+    logger.info(`[SOCKET CONNECTION] New socket connected`, {
+      socketId: socket.id,
+      userId: socket.user?.id,
+      transport: socket.conn.transport.name,
+      headers: {
+        origin: socket.handshake.headers.origin,
+        userAgent: socket.handshake.headers['user-agent']
+      }
+    });
+
+    // Monitor all events on this socket
+    const originalEmit = socket.emit;
+    socket.emit = function(eventName, ...args) {
+      logger.debug(`[SOCKET EMIT] Server -> Client`, {
+        socketId: socket.id,
+        userId: socket.user?.id,
+        eventName,
+        dataPreview: JSON.stringify(args[0]).substring(0, 200),
+        timestamp: new Date().toISOString()
+      });
+      return originalEmit.apply(socket, [eventName, ...args]);
+    };
+
+    // Monitor disconnection
+    socket.on('disconnect', (reason) => {
+      const connInfo = connectionMap.get(socket.id);
+      logger.info(`[SOCKET DISCONNECT] Socket disconnected`, {
+        socketId: socket.id,
+        userId: socket.user?.id,
+        reason,
+        duration: connInfo ? Date.now() - connInfo.connectedAt.getTime() : 'unknown'
+      });
+      connectionMap.delete(socket.id);
+    });
+
+    // Log socket errors
+    socket.on('error', (error) => {
+      logger.error(`[SOCKET ERROR] Socket error occurred`, {
+        socketId: socket.id,
+        userId: socket.user?.id,
+        error: error.message,
+        stack: error.stack
+      });
+    });
+  });
+
+  // Log server-level events
+  io.engine.on('initial_headers', (headers, req) => {
+    logger.debug(`[ENGINE] Initial headers`, {
+      url: req.url,
+      method: req.method,
+      headers: req.headers
+    });
+  });
+
+  io.engine.on('headers', (headers, req) => {
+    logger.debug(`[ENGINE] Headers event`, {
+      url: req.url,
+      socketId: req._query?.EIO
+    });
+  });
+
+  // Periodic status report
+  setInterval(() => {
+    const socketsCount = io.sockets.sockets.size;
+    const socketsList = Array.from(io.sockets.sockets.values()).map(s => ({
+      id: s.id,
+      userId: s.user?.id,
+      connected: s.connected,
+      rooms: Array.from(s.rooms)
+    }));
+
+    logger.info(`[SOCKET STATUS] Server status report`, {
+      totalSockets: socketsCount,
+      sockets: socketsList,
+      timestamp: new Date().toISOString()
+    });
+  }, 60000); // Every minute
+
+  logger.info('✅ [SocketIO DEBUG] Enhanced debugging configured');
+}
+
 function getCorsOrigin() {
-  // Use enhanced CORS configuration if available
   if (config.cors?.origin) {
     return config.cors.origin;
   }
   
-  // Fallback to server CORS origin
   const serverOrigin = config.server.corsOrigin;
   
-  // If using wildcard in development, allow it
   if (serverOrigin === '*' && config.server.nodeEnv !== 'production') {
     logger.warn('⚠️ [SocketIO] Using wildcard CORS origin in development');
     return '*';
   }
   
-  // For production, ensure we have specific origins
   if (config.server.nodeEnv === 'production' && serverOrigin === '*') {
     logger.error('❌ [SocketIO] Wildcard CORS origin not allowed in production');
     throw new Error('Wildcard CORS origin not allowed in production');
   }
   
-  // Convert to array format
   const origins = serverOrigin.split(',').map(origin => origin.trim());
   
-  // Ensure HTTPS origins in production
   if (config.server.nodeEnv === 'production') {
     const httpOrigins = origins.filter(origin => origin.startsWith('http://'));
     if (httpOrigins.length > 0) {
@@ -139,7 +230,6 @@ function getCorsOrigin() {
 function setupSSLEventListeners(io) {
   logger.info('🔧 [SocketIO] Setting up SSL-specific event listeners...');
   
-  // Track SSL connection statistics
   const sslStats = {
     totalConnections: 0,
     secureConnections: 0,
@@ -147,7 +237,6 @@ function setupSSLEventListeners(io) {
     upgradeFailures: 0
   };
   
-  // Monitor connection upgrades (HTTP polling → WebSocket)
   io.engine.on('connection', (socket) => {
     sslStats.totalConnections++;
     
@@ -158,7 +247,6 @@ function setupSSLEventListeners(io) {
       sslStats.secureConnections++;
     }
     
-    // Log transport upgrades
     socket.on('upgrade', () => {
       sslStats.upgradeSuccesses++;
       logger.debug('⬆️ [SocketIO] Transport upgraded to WebSocket', {
@@ -178,7 +266,6 @@ function setupSSLEventListeners(io) {
     });
   });
   
-  // Enhanced connection error handling
   io.engine.on('connection_error', (err) => {
     logger.error('❌ [SocketIO] Enhanced connection error', {
       error: err.message,
@@ -198,7 +285,6 @@ function setupSSLEventListeners(io) {
     });
   });
   
-  // Periodic SSL statistics logging
   setInterval(() => {
     const securePercentage = sslStats.totalConnections > 0 ? 
       Math.round((sslStats.secureConnections / sslStats.totalConnections) * 100) : 0;
@@ -207,7 +293,7 @@ function setupSSLEventListeners(io) {
       ...sslStats,
       securePercentage: `${securePercentage}%`
     });
-  }, 5 * 60 * 1000); // Every 5 minutes
+  }, 5 * 60 * 1000);
   
   logger.info('✅ [SocketIO] SSL event listeners configured');
 }
