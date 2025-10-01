@@ -19,7 +19,7 @@ async function setupMiddleware(app) {
     setupSecurityMiddleware(app);
     setupSSLMiddleware(app);
     setupCompressionMiddleware(app);
-    setupCorsMiddleware(app);
+    //setupCorsMiddleware(app);
     setupBodyParsers(app);
     setupRequestLogging(app);
     setupRateLimiting(app);

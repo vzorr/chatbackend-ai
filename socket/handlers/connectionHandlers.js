@@ -98,4 +98,35 @@ module.exports = (io, socket) => {
       });
     }
   });
+
+
+  // Add this event handler in the module.exports function, after other handlers
+
+socket.on('get_all_online_users', async () => {
+  try {
+    const onlineUsers = await redisService.getOnlineUsers();
+    
+    socket.emit('all_online_users', {
+      users: onlineUsers,
+      count: onlineUsers?.length || 0,
+      timestamp: Date.now()
+    });
+
+    logger.debug(`Sent online users list to user ${userId}`, {
+      count: onlineUsers?.length || 0
+    });
+  } catch (error) {
+    logger.error(`Error getting all online users: ${error.message}`, {
+      error: error.stack,
+      userId,
+      socketId
+    });
+    socket.emit('error', {
+      code: 'GET_ALL_ONLINE_USERS_FAILED',
+      message: 'Failed to retrieve online users list'
+    });
+  }
+});
+
+
 };

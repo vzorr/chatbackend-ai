@@ -402,6 +402,7 @@ const ping = async () => {
   }
 };
 
+
 const getOnlineUsers = async () => {
   try {
     // Get all user presence keys
@@ -426,14 +427,17 @@ const getOnlineUsers = async () => {
           // Extract user ID from the key
           const userId = keys[index].replace(KEY_PREFIXES.USER_PRESENCE, '');
           onlineUsers.push({
-            userId,
+            id: userId, // Changed from userId to id for consistency
             socketId: presence.socketId,
+            isOnline: true,
+            lastSeen: presence.lastSeen,
             updatedAt: presence.updatedAt
           });
         }
       }
     });
     
+    logger.debug(`Found ${onlineUsers.length} online users`);
     return onlineUsers;
   } catch (error) {
     logger.error('Error getting online users', { error: error.message });
