@@ -123,10 +123,15 @@ class ConversationService {
           })
       );
       
+      console.log('DEBUG: About to log conversation info');
+      console.log('DEBUG: userId =', userId);
+      console.log('DEBUG: conversations length =', conversations.length);
+      console.log('DEBUG: first conversation id =', conversations[0]?.id);
+
       logger.info('Socket connected - returning user conversations', {
-                   userId,
-                   conversationCount: conversations.length,
-                    conversationIds: conversations.map(c => c.id)
+        userId,
+        conversationCount: conversations.length,
+        conversationIds: conversations.map(c => c.id)
       });
 
       return conversations;
