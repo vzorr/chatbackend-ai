@@ -1,7 +1,6 @@
 // utils/logger.js
 const winston = require('winston');
 const DailyRotateFile = require('winston-daily-rotate-file');
-// const { ElasticsearchTransport } = require('winston-elasticsearch');
 const path = require('path');
 const config = require('../config/config');
 
@@ -18,6 +17,62 @@ function flattenObject(obj, prefix = '', res = {}) {
     }
   }
   return res;
+}
+
+// Helper to safely serialize any value
+function safeSerialize(value, maxDepth = 3, currentDepth = 0) {
+  if (currentDepth > maxDepth) {
+    return '[Max Depth Reached]';
+  }
+
+  if (value === null) return null;
+  if (value === undefined) return undefined;
+  
+  // Handle primitives
+  if (typeof value !== 'object') {
+    return value;
+  }
+
+  // Handle arrays
+  if (Array.isArray(value)) {
+    if (value.length === 0) return [];
+    if (value.length > 100) {
+      return `[Array with ${value.length} items]`;
+    }
+    return value.map(item => safeSerialize(item, maxDepth, currentDepth + 1));
+  }
+
+  // Handle Error objects
+  if (value instanceof Error) {
+    return {
+      name: value.name,
+      message: value.message,
+      stack: value.stack
+    };
+  }
+
+  // Handle Date objects
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  // Handle regular objects
+  try {
+    const serialized = {};
+    const keys = Object.keys(value);
+    
+    if (keys.length > 50) {
+      return `[Object with ${keys.length} keys]`;
+    }
+    
+    for (const key of keys) {
+      serialized[key] = safeSerialize(value[key], maxDepth, currentDepth + 1);
+    }
+    
+    return serialized;
+  } catch (error) {
+    return '[Unserializable Object]';
+  }
 }
 
 class EnterpriseLogger {
@@ -42,7 +97,11 @@ class EnterpriseLogger {
       transports.push(new winston.transports.Console({
         format: winston.format.combine(
           winston.format.colorize(),
-          winston.format.simple()
+          winston.format.printf(info => {
+            const { level, message, timestamp, ...meta } = info;
+            const metaStr = Object.keys(meta).length ? JSON.stringify(meta, null, 2) : '';
+            return `${timestamp} ${level}: ${message} ${metaStr}`;
+          })
         )
       }));
     }
@@ -96,60 +155,6 @@ class EnterpriseLogger {
       format: fileFormat
     }));
 
-    // Optional Elasticsearch transport
-    // if (config.logging?.elasticsearch?.enabled && config.logging?.elasticsearch?.url) {
-    //   try {
-    //     transports.push(new ElasticsearchTransport({
-    //       level: config.logging?.level || 'info',
-    //       clientOpts: {
-    //         node: config.logging.elasticsearch.url,
-    //         auth: config.logging.elasticsearch.user ? {
-    //           username: config.logging.elasticsearch.user,
-    //           password: config.logging.elasticsearch.password
-    //         } : undefined,
-    //         tls: {
-    //           rejectUnauthorized: false
-    //         }
-    //       },
-    //       indexPrefix: config.logging?.elasticsearch?.indexPrefix || 'chat-server-logs',
-    //       dataStream: true,
-    //       transformer: (logData) => {
-    //         const { timestamp, level, message, ...meta } = logData;
-    //         
-    //         // Get context from the logger instance
-    //         const currentContext = this.getCurrentContext();
-    //         
-    //         // Merge all metadata
-    //         const allMeta = {
-    //           ...currentContext,
-    //           ...meta,
-    //           environment: process.env.NODE_ENV || 'development',
-    //           service: 'vortexhive-chat',
-    //           version: process.env.npm_package_version || '1.0.0'
-    //         };
-    //         
-    //         // Remove duplicate fields that would conflict
-    //         delete allMeta.timestamp;
-    //         delete allMeta.level;
-    //         delete allMeta.message;
-    //         
-    //         // Flatten the metadata to avoid nested object conflicts
-    //         const flattenedMeta = flattenObject(allMeta);
-    //         
-    //         return {
-    //           '@timestamp': new Date(timestamp || new Date()).toISOString(),
-    //           message: message || '',
-    //           severity: level || 'info',
-    //           // Don't nest under 'fields' - put flattened fields at root
-    //           ...flattenedMeta
-    //         };
-    //       }
-    //     }));
-    //   } catch (error) {
-    //     console.warn('Failed to initialize Elasticsearch transport:', error.message);
-    //   }
-    // }
-
     return winston.createLogger({
       level: config.logging?.level || 'info',
       format,
@@ -174,6 +179,35 @@ class EnterpriseLogger {
       ],
       exitOnError: false
     });
+  }
+
+  // Preprocess log arguments to prevent [object Object]
+  preprocessLogArgs(message, meta = {}) {
+    // Handle message serialization
+    if (message === null) {
+      message = 'null';
+    } else if (message === undefined) {
+      message = 'undefined';
+    } else if (typeof message === 'object') {
+      if (message instanceof Error) {
+        message = message.stack || message.message;
+      } else if (Array.isArray(message)) {
+        message = `[Array(${message.length})] ${JSON.stringify(safeSerialize(message))}`;
+      } else {
+        try {
+          message = JSON.stringify(safeSerialize(message));
+        } catch (e) {
+          message = '[Circular/Complex Object]';
+        }
+      }
+    } else {
+      message = String(message);
+    }
+
+    // Ensure meta is serializable
+    meta = safeSerialize(meta);
+
+    return { message, meta };
   }
 
   // Format message properly
@@ -212,13 +246,11 @@ class EnterpriseLogger {
     return this;
   }
 
-  // Get the current context
   getCurrentContext() {
     const contextKey = this.getContextKey();
     return this.contextMap.get(contextKey) || this.defaultContext;
   }
 
-  // Get context key - could be request ID, process ID, or async context
   getContextKey() {
     try {
       if (global.asyncLocalStorage && global.asyncLocalStorage.getStore) {
@@ -232,19 +264,23 @@ class EnterpriseLogger {
   }
 
   info(message, meta = {}) {
-    this.logger.info(this.formatMessage(message), this.sanitizeMeta(meta));
+    const processed = this.preprocessLogArgs(message, meta);
+    this.logger.info(processed.message, this.sanitizeMeta(processed.meta));
   }
 
   error(message, meta = {}) {
-    this.logger.error(this.formatMessage(message), this.sanitizeMeta(this.processError(meta)));
+    const processed = this.preprocessLogArgs(message, meta);
+    this.logger.error(processed.message, this.sanitizeMeta(this.processError(processed.meta)));
   }
 
   warn(message, meta = {}) {
-    this.logger.warn(this.formatMessage(message), this.sanitizeMeta(meta));
+    const processed = this.preprocessLogArgs(message, meta);
+    this.logger.warn(processed.message, this.sanitizeMeta(processed.meta));
   }
 
   debug(message, meta = {}) {
-    this.logger.debug(this.formatMessage(message), this.sanitizeMeta(meta));
+    const processed = this.preprocessLogArgs(message, meta);
+    this.logger.debug(processed.message, this.sanitizeMeta(processed.meta));
   }
 
   audit(action, meta = {}) {

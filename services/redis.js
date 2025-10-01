@@ -408,7 +408,10 @@ const getOnlineUsers = async () => {
     // Get all user presence keys
     const keys = await redisClient.keys(KEY_PREFIXES.USER_PRESENCE + '*');
     
-    if (!keys.length) return [];
+    if (!keys.length) {
+      logger.info('[Redis] No online users found (no presence keys)');
+      return [];
+    }
     
     // Get all presence data
     const pipeline = redisClient.pipeline();
@@ -417,30 +420,109 @@ const getOnlineUsers = async () => {
     });
     
     const results = await pipeline.exec();
-    const onlineUsers = [];
+    const onlineUserIds = [];
+    const presenceData = {};
     
     results.forEach((result, index) => {
       const [err, data] = result;
       if (!err && data) {
-        const presence = JSON.parse(data);
-        if (presence.isOnline) {
-          // Extract user ID from the key
-          const userId = keys[index].replace(KEY_PREFIXES.USER_PRESENCE, '');
-          onlineUsers.push({
-            id: userId, // Changed from userId to id for consistency
-            socketId: presence.socketId,
-            isOnline: true,
-            lastSeen: presence.lastSeen,
-            updatedAt: presence.updatedAt
-          });
+        try {
+          const presence = JSON.parse(data);
+          if (presence.isOnline) {
+            const userId = keys[index].replace(KEY_PREFIXES.USER_PRESENCE, '');
+            onlineUserIds.push(userId);
+            presenceData[userId] = presence;
+          }
+        } catch (parseError) {
+          logger.error('[Redis] Error parsing presence data', { error: parseError.message });
         }
       }
     });
     
-    logger.debug(`Found ${onlineUsers.length} online users`);
-    return onlineUsers;
+    if (onlineUserIds.length === 0) {
+      logger.info('[Redis] No users currently online');
+      return [];
+    }
+    
+    logger.info(`[Redis] Found ${onlineUserIds.length} online user IDs, fetching user details...`, {
+      userIds: onlineUserIds
+    });
+    
+    // Fetch user details from database
+    try {
+      const models = db.getModels();
+      const User = models.User;
+      
+      if (!User) {
+        logger.error('[Redis] User model not available');
+        // Return basic data without names
+        return onlineUserIds.map(userId => ({
+          id: userId,
+          name: 'Unknown User',
+          isOnline: true,
+          socketId: presenceData[userId].socketId,
+          lastSeen: null
+        }));
+      }
+      
+      const users = await User.findAll({
+        where: { id: onlineUserIds },
+        attributes: ['id', 'name', 'firstName', 'lastName', 'email', 'avatar', 'role']
+      });
+      
+      logger.info(`[Redis] Fetched ${users.length} user records from database`);
+      
+      const onlineUsers = users.map(user => {
+        // Use fullName getter or construct name from firstName/lastName
+        const displayName = user.fullName || 
+                          user.name || 
+                          (user.firstName && user.lastName ? `${user.firstName} ${user.lastName}` : null) ||
+                          user.firstName || 
+                          user.lastName || 
+                          'Unknown User';
+        
+        return {
+          id: user.id,
+          name: displayName,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          avatar: user.avatar,
+          role: user.role,
+          isOnline: true,
+          socketId: presenceData[user.id].socketId,
+          lastSeen: null,
+          updatedAt: presenceData[user.id].updatedAt
+        };
+      });
+      
+      logger.info(`[Redis] Returning ${onlineUsers.length} online users with full details`, {
+        users: onlineUsers.map(u => ({ id: u.id, name: u.name }))
+      });
+      
+      return onlineUsers;
+      
+    } catch (dbError) {
+      logger.error('[Redis] Database error while fetching user details', { 
+        error: dbError.message,
+        stack: dbError.stack 
+      });
+      
+      // Fallback: return basic data
+      return onlineUserIds.map(userId => ({
+        id: userId,
+        name: 'Unknown User',
+        isOnline: true,
+        socketId: presenceData[userId].socketId,
+        lastSeen: null
+      }));
+    }
+    
   } catch (error) {
-    logger.error('Error getting online users', { error: error.message });
+    logger.error('[Redis] Error getting online users', { 
+      error: error.message,
+      stack: error.stack 
+    });
     return [];
   }
 };
