@@ -128,11 +128,11 @@ class ConversationService {
       console.log('DEBUG: conversations length =', conversations.length);
       console.log('DEBUG: first conversation id =', conversations[0]?.id);
 
-      logger.info('Socket connected - returning user conversations', {
-        userId,
-        conversationCount: conversations.length,
-        conversationIds: conversations.map(c => c.id)
-      });
+    console.log('Socket connected - returning user conversations:', JSON.stringify({
+                userId,
+                conversationCount: conversations.length,
+                conversationIds: conversations.map(c => c.id)
+               }, null, 2));
 
       return conversations;
     } catch (error) {
