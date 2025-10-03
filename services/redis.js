@@ -2,6 +2,7 @@
 const Redis = require('ioredis');
 const { promisify } = require('util');
 const logger = require('../utils/logger');
+const db = require('../db');
 
 // Create Redis connection with options for resilience
 const createRedisClient = () => {
@@ -281,7 +282,7 @@ const getConversationMessages = async (conversationId, limit = 50, offset = 0) =
 const isUserStillOnline = async (userId) => {
   const presence = await getUserPresence(userId);
   return presence && presence.isOnline;
-}
+};
 
 const updateUserPresence = async (userId, isOnline, socketId = null) => {
   if (isOnline) {
@@ -289,7 +290,7 @@ const updateUserPresence = async (userId, isOnline, socketId = null) => {
   } else {
     return await setUserOffline(userId);
   }
-}
+};
 
 // Typing indicator functions - UPDATED
 const setUserTyping = async (userId, conversationId, ttlMs = 3000) => {
@@ -402,7 +403,6 @@ const ping = async () => {
   }
 };
 
-
 const getOnlineUsers = async () => {
   try {
     // Get all user presence keys
@@ -450,6 +450,12 @@ const getOnlineUsers = async () => {
     
     // Fetch user details from database
     try {
+      // Ensure DB is initialized
+      if (!db.isInitialized()) {
+        logger.warn('[Redis] Database not initialized yet, waiting...');
+        await db.waitForInitialization();
+      }
+
       const models = db.getModels();
       const User = models.User;
       
@@ -460,7 +466,7 @@ const getOnlineUsers = async () => {
           id: userId,
           name: 'Unknown User',
           isOnline: true,
-          socketId: presenceData[userId].socketId,
+          socketId: presenceData[userId]?.socketId,
           lastSeen: null
         }));
       }
@@ -490,9 +496,9 @@ const getOnlineUsers = async () => {
           avatar: user.avatar,
           role: user.role,
           isOnline: true,
-          socketId: presenceData[user.id].socketId,
+          socketId: presenceData[user.id]?.socketId,
           lastSeen: null,
-          updatedAt: presenceData[user.id].updatedAt
+          updatedAt: presenceData[user.id]?.updatedAt
         };
       });
       
@@ -513,7 +519,7 @@ const getOnlineUsers = async () => {
         id: userId,
         name: 'Unknown User',
         isOnline: true,
-        socketId: presenceData[userId].socketId,
+        socketId: presenceData[userId]?.socketId,
         lastSeen: null
       }));
     }
