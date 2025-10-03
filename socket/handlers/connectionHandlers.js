@@ -12,7 +12,7 @@ module.exports = (io, socket) => {
   console.log('User:', socket.user);
   console.log('Time:', new Date().toISOString());
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-  
+
   const userId = socket.user.id;
   const socketId = socket.id;
   
@@ -26,12 +26,26 @@ module.exports = (io, socket) => {
   const originalOnevent = socket.onevent;
   socket.onevent = function(packet) {
     const args = packet.data || [];
+    
+     // Console log for immediate visibility
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('[SOCKET EVENT RECEIVED]');
+    console.log('User ID:', userId);
+    console.log('Socket ID:', socketId);
+    console.log('Event Name:', args[0]);
+    console.log('Payload:', JSON.stringify(args[1], null, 2));
+    console.log('Timestamp:', new Date().toISOString());
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    
+    
     logger.debug(`[SOCKET EVENT RECEIVED] User ${userId} | Event: ${args[0]}`, {
       socketId,
       eventName: args[0],
       payload: args[1],
       timestamp: new Date().toISOString()
     });
+
+
     originalOnevent.call(this, packet);
   };
 
