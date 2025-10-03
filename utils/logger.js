@@ -4,21 +4,6 @@ const DailyRotateFile = require('winston-daily-rotate-file');
 const path = require('path');
 const config = require('../config/config');
 
-function flattenObject(obj, prefix = '', res = {}) {
-  for (const key in obj) {
-    if (!Object.hasOwn(obj, key)) continue;
-    const value = obj[key];
-    const prefixedKey = prefix ? `${prefix}.${key}` : key;
-
-    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-      flattenObject(value, prefixedKey, res);
-    } else {
-      res[prefixedKey] = value;
-    }
-  }
-  return res;
-}
-
 // Helper to safely serialize any value
 function safeSerialize(value, maxDepth = 3, currentDepth = 0) {
   if (currentDepth > maxDepth) {
@@ -66,7 +51,11 @@ function safeSerialize(value, maxDepth = 3, currentDepth = 0) {
     }
     
     for (const key of keys) {
-      serialized[key] = safeSerialize(value[key], maxDepth, currentDepth + 1);
+      try {
+        serialized[key] = safeSerialize(value[key], maxDepth, currentDepth + 1);
+      } catch (err) {
+        serialized[key] = '[Unserializable]';
+      }
     }
     
     return serialized;
@@ -77,91 +66,87 @@ function safeSerialize(value, maxDepth = 3, currentDepth = 0) {
 
 class EnterpriseLogger {
   constructor() {
-    this.logger = this.createLogger();
     this.contextMap = new Map();
     this.defaultContext = {};
+    this.logger = this.createLogger();
   }
 
   createLogger() {
-    const format = winston.format.combine(
-      winston.format.timestamp({ format: () => new Date().toISOString() }),
-      winston.format.errors({ stack: true }),
-      winston.format.splat(),
-      winston.format.json()
-    );
-
-    const transports = [];
-
-    // Console transport for non-production environments
-    if ((process.env.NODE_ENV || 'development') !== 'production') {
-      transports.push(new winston.transports.Console({
-        format: winston.format.combine(
-          winston.format.colorize(),
-          winston.format.timestamp({ format: 'HH:mm:ss' }),
-          winston.format.printf(({ timestamp, level, message, ...meta }) => {
-            const metaStr = Object.keys(meta).length ? `\n${JSON.stringify(meta, null, 2)}` : '';
-            return `${timestamp} ${level}: ${message}${metaStr}`;
-          })
-        )
-      }));
-    }
-
-    // Create logs directory if it doesn't exist
     const logsDir = path.join(process.cwd(), 'logs');
+    
+    // Create logs directory
     try {
       require('fs').mkdirSync(logsDir, { recursive: true });
     } catch (err) {
       console.warn('Could not create logs directory:', err.message);
     }
 
-    // Daily rotate file transports with custom format
+    const transports = [];
+
+    // Console transport for non-production
+    if ((process.env.NODE_ENV || 'development') !== 'production') {
+      transports.push(new winston.transports.Console({
+        format: winston.format.combine(
+          winston.format.colorize(),
+          winston.format.timestamp({ format: 'HH:mm:ss' }),
+          winston.format.printf(({ timestamp, level, message, ...meta }) => {
+            // Remove internal Winston fields
+            const { splat, ...cleanMeta } = meta;
+            const metaStr = Object.keys(cleanMeta).length 
+              ? `\n${JSON.stringify(cleanMeta, null, 2)}` 
+              : '';
+            return `${timestamp} ${level}: ${message}${metaStr}`;
+          })
+        ),
+        handleExceptions: false,
+        handleRejections: false
+      }));
+    }
+
+    // File format without context binding issues
     const fileFormat = winston.format.combine(
       winston.format.timestamp({ format: () => new Date().toISOString() }),
       winston.format.errors({ stack: true }),
-      winston.format.json(),
-      winston.format.printf(info => {
-        const { timestamp, level, message, ...meta } = info;
-        const currentContext = this.getCurrentContext();
-        return JSON.stringify({
-          timestamp,
-          level,
-          message,
-          ...currentContext,
-          ...meta,
-          environment: process.env.NODE_ENV || 'development',
-          service: 'vortexhive-chat',
-          version: process.env.npm_package_version || '1.0.0'
-        });
-      })
+      winston.format.json()
     );
 
+    // Application log file
     transports.push(new DailyRotateFile({
-      filename: 'logs/application-%DATE%.log',
+      filename: path.join(logsDir, 'application-%DATE%.log'),
       datePattern: 'YYYY-MM-DD',
       zippedArchive: true,
       maxSize: '20m',
       maxFiles: `${config.logging?.retention?.days || 30}d`,
       level: config.logging?.level || 'info',
-      format: fileFormat
+      format: fileFormat,
+      handleExceptions: false,
+      handleRejections: false
     }));
 
+    // Error log file
     transports.push(new DailyRotateFile({
-      filename: 'logs/error-%DATE%.log',
+      filename: path.join(logsDir, 'error-%DATE%.log'),
       datePattern: 'YYYY-MM-DD',
       zippedArchive: true,
       maxSize: '20m',
       maxFiles: `${config.logging?.retention?.days || 30}d`,
       level: 'error',
-      format: fileFormat
+      format: fileFormat,
+      handleExceptions: false,
+      handleRejections: false
     }));
 
-    return winston.createLogger({
+    const logger = winston.createLogger({
       level: config.logging?.level || 'info',
-      format,
+      format: winston.format.combine(
+        winston.format.timestamp(),
+        winston.format.errors({ stack: true }),
+        winston.format.json()
+      ),
       transports,
       exceptionHandlers: [
         new DailyRotateFile({
-          filename: 'logs/exceptions-%DATE%.log',
+          filename: path.join(logsDir, 'exceptions-%DATE%.log'),
           datePattern: 'YYYY-MM-DD',
           zippedArchive: true,
           maxSize: '20m',
@@ -170,7 +155,7 @@ class EnterpriseLogger {
       ],
       rejectionHandlers: [
         new DailyRotateFile({
-          filename: 'logs/rejections-%DATE%.log',
+          filename: path.join(logsDir, 'rejections-%DATE%.log'),
           datePattern: 'YYYY-MM-DD',
           zippedArchive: true,
           maxSize: '20m',
@@ -179,54 +164,15 @@ class EnterpriseLogger {
       ],
       exitOnError: false
     });
-  }
 
-  // Preprocess log arguments to prevent [object Object]
-  preprocessLogArgs(message, meta = {}) {
-    // Handle message serialization
-    if (message === null) {
-      message = 'null';
-    } else if (message === undefined) {
-      message = 'undefined';
-    } else if (typeof message === 'object') {
-      if (message instanceof Error) {
-        message = message.stack || message.message;
-      } else if (Array.isArray(message)) {
-        message = `[Array(${message.length})] ${JSON.stringify(safeSerialize(message))}`;
-      } else {
-        try {
-          message = JSON.stringify(safeSerialize(message));
-        } catch (e) {
-          message = '[Circular/Complex Object]';
-        }
-      }
-    } else {
-      message = String(message);
-    }
+    // Test that logger is working
+    logger.info('Logger initialized successfully', {
+      environment: process.env.NODE_ENV || 'development',
+      logLevel: config.logging?.level || 'info',
+      logsDirectory: logsDir
+    });
 
-    // Ensure meta is serializable
-    meta = safeSerialize(meta);
-
-    return { message, meta };
-  }
-
-  // Format message properly
-  formatMessage(message) {
-    if (message === undefined) return 'undefined';
-    if (message === null) return 'null';
-
-    if (typeof message === 'object') {
-      try {
-        if (message instanceof Error) {
-          return message.stack || message.message;
-        }
-        return JSON.stringify(message);
-      } catch (error) {
-        return '[Object could not be stringified]';
-      }
-    }
-
-    return String(message);
+    return logger;
   }
 
   // Context management
@@ -263,29 +209,94 @@ class EnterpriseLogger {
     return process.pid.toString();
   }
 
+  // Prepare log data
+  prepareLogData(message, meta = {}) {
+    // Convert message to string if it's an object
+    let logMessage = message;
+    let logMeta = { ...meta };
+
+    if (message === null) {
+      logMessage = 'null';
+    } else if (message === undefined) {
+      logMessage = 'undefined';
+    } else if (typeof message === 'object') {
+      if (message instanceof Error) {
+        logMessage = message.message;
+        logMeta = {
+          ...logMeta,
+          error: message.message,
+          stack: message.stack,
+          name: message.name,
+          ...(message.code && { code: message.code })
+        };
+      } else {
+        // For objects, make them part of meta
+        logMessage = 'Object log';
+        logMeta = {
+          ...logMeta,
+          data: safeSerialize(message)
+        };
+      }
+    } else {
+      logMessage = String(message);
+    }
+
+    // Add context
+    const context = this.getCurrentContext();
+    
+    // Sanitize and serialize meta
+    const sanitizedMeta = this.sanitizeMeta(safeSerialize(logMeta));
+
+    return {
+      message: logMessage,
+      meta: {
+        ...context,
+        ...sanitizedMeta,
+        environment: process.env.NODE_ENV || 'development',
+        service: 'vortexhive-chat',
+        pid: process.pid
+      }
+    };
+  }
+
   info(message, meta = {}) {
-    const processed = this.preprocessLogArgs(message, meta);
-    this.logger.info(processed.message, this.sanitizeMeta(processed.meta));
+    const { message: logMessage, meta: logMeta } = this.prepareLogData(message, meta);
+    this.logger.info(logMessage, logMeta);
   }
 
   error(message, meta = {}) {
-    const processed = this.preprocessLogArgs(message, meta);
-    this.logger.error(processed.message, this.sanitizeMeta(this.processError(processed.meta)));
+    const { message: logMessage, meta: logMeta } = this.prepareLogData(message, meta);
+    
+    // Handle error objects in meta
+    if (meta instanceof Error) {
+      logMeta.error = meta.message;
+      logMeta.stack = meta.stack;
+      logMeta.name = meta.name;
+      if (meta.code) logMeta.code = meta.code;
+    } else if (meta.error instanceof Error) {
+      logMeta.errorMessage = meta.error.message;
+      logMeta.errorStack = meta.error.stack;
+      logMeta.errorName = meta.error.name;
+      if (meta.error.code) logMeta.errorCode = meta.error.code;
+    }
+    
+    this.logger.error(logMessage, logMeta);
   }
 
   warn(message, meta = {}) {
-    const processed = this.preprocessLogArgs(message, meta);
-    this.logger.warn(processed.message, this.sanitizeMeta(processed.meta));
+    const { message: logMessage, meta: logMeta } = this.prepareLogData(message, meta);
+    this.logger.warn(logMessage, logMeta);
   }
 
   debug(message, meta = {}) {
-    const processed = this.preprocessLogArgs(message, meta);
-    this.logger.debug(processed.message, this.sanitizeMeta(processed.meta));
+    const { message: logMessage, meta: logMeta } = this.prepareLogData(message, meta);
+    this.logger.debug(logMessage, logMeta);
   }
 
   audit(action, meta = {}) {
+    const { meta: logMeta } = this.prepareLogData(action, meta);
     this.logger.info('AUDIT', {
-      ...this.sanitizeMeta(meta),
+      ...logMeta,
       action,
       audit: true
     });
@@ -293,8 +304,9 @@ class EnterpriseLogger {
   }
 
   performance(operation, duration, meta = {}) {
+    const { meta: logMeta } = this.prepareLogData(operation, meta);
     this.logger.info('PERFORMANCE', {
-      ...this.sanitizeMeta(meta),
+      ...logMeta,
       operation,
       duration: typeof duration === 'number' ? `${duration}ms` : String(duration),
       performanceMetric: true
@@ -303,8 +315,9 @@ class EnterpriseLogger {
   }
 
   security(event, meta = {}) {
+    const { meta: logMeta } = this.prepareLogData(event, meta);
     this.logger.warn('SECURITY', {
-      ...this.sanitizeMeta(meta),
+      ...logMeta,
       securityEvent: event,
       severity: meta.severity || 'medium',
       securityAlert: true
@@ -312,60 +325,31 @@ class EnterpriseLogger {
     return this;
   }
 
-  processError(meta) {
-    if (!meta) return {};
-
-    if (meta instanceof Error) {
-      return {
-        errorMessage: meta.message,
-        errorStack: meta.stack,
-        errorCode: meta.code,
-        errorName: meta.name
-      };
-    }
-
-    if (meta.error instanceof Error) {
-      return {
-        ...meta,
-        errorMessage: meta.error.message,
-        errorStack: meta.error.stack,
-        errorCode: meta.error.code,
-        errorName: meta.error.name
-      };
-    }
-
-    if (meta.error && typeof meta.error === 'string') {
-      return {
-        ...meta,
-        errorMessage: meta.error
-      };
-    }
-
-    return meta;
-  }
-
   sanitizeMeta(meta) {
     if (!meta || typeof meta !== 'object') return meta;
 
     let sanitized;
     try {
+      // Create a deep copy
       sanitized = JSON.parse(JSON.stringify(meta));
     } catch (error) {
+      // If JSON fails, do shallow copy
       sanitized = { ...meta };
     }
 
     const sensitiveFields = [
       'password', 'token', 'secret', 'key', 'authorization', 'credit_card',
-      'ssn', 'pin', 'apiKey', 'api_key', 'auth', 'authentication', 'credential',
-      'accessToken', 'refreshToken', 'access_token', 'refresh_token', 'jwt'
+      'ssn', 'pin', 'apikey', 'api_key', 'auth', 'authentication', 'credential',
+      'accesstoken', 'refreshtoken', 'access_token', 'refresh_token', 'jwt'
     ];
 
     const sanitizeObject = (obj) => {
       if (!obj || typeof obj !== 'object') return;
+      
       Object.keys(obj).forEach(key => {
-        const isSensitive = sensitiveFields.some(field =>
-          key.toLowerCase().includes(field.toLowerCase())
-        );
+        const lowerKey = key.toLowerCase();
+        const isSensitive = sensitiveFields.some(field => lowerKey.includes(field));
+        
         if (typeof obj[key] === 'object' && obj[key] !== null) {
           sanitizeObject(obj[key]);
         } else if (isSensitive && typeof obj[key] === 'string') {
@@ -380,8 +364,11 @@ class EnterpriseLogger {
 
   child(defaultMeta) {
     const childLogger = Object.create(this);
-    childLogger.logger = this.logger.child(defaultMeta);
-    childLogger.defaultContext = { ...this.defaultContext, ...defaultMeta };
+    childLogger.logger = this.logger.child(safeSerialize(defaultMeta));
+    childLogger.defaultContext = { 
+      ...this.defaultContext, 
+      ...safeSerialize(defaultMeta) 
+    };
     return childLogger;
   }
 
@@ -397,5 +384,10 @@ class EnterpriseLogger {
   }
 }
 
+// Create and export singleton instance
 const logger = new EnterpriseLogger();
+
+// Export both the instance and the class
 module.exports = logger;
+module.exports.EnterpriseLogger = EnterpriseLogger;
+module.exports.logger = logger;
