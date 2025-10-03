@@ -24,7 +24,11 @@ function safeSerialize(value, maxDepth = 3, currentDepth = 0) {
     if (value.length > 100) {
       return `[Array with ${value.length} items]`;
     }
-    return value.map(item => safeSerialize(item, maxDepth, currentDepth + 1));
+    try {
+      return value.map(item => safeSerialize(item, maxDepth, currentDepth + 1));
+    } catch (err) {
+      return '[Array serialization failed]';
+    }
   }
 
   // Handle Error objects
@@ -69,6 +73,7 @@ class EnterpriseLogger {
     this.contextMap = new Map();
     this.defaultContext = {};
     this.logger = this.createLogger();
+    this.isLogging = false; // Prevent recursive logging
   }
 
   createLogger() {
@@ -103,7 +108,7 @@ class EnterpriseLogger {
       }));
     }
 
-    // File format without context binding issues
+    // File format
     const fileFormat = winston.format.combine(
       winston.format.timestamp({ format: () => new Date().toISOString() }),
       winston.format.errors({ stack: true }),
@@ -166,35 +171,43 @@ class EnterpriseLogger {
     });
 
     // Test that logger is working
-    logger.info('Logger initialized successfully', {
-      environment: process.env.NODE_ENV || 'development',
-      logLevel: config.logging?.level || 'info',
-      logsDirectory: logsDir
-    });
+    console.log('Logger initialized successfully');
 
     return logger;
   }
 
   // Context management
   setContext(context) {
-    const contextKey = this.getContextKey();
-    const existingContext = this.contextMap.get(contextKey) || {};
-    this.contextMap.set(contextKey, {
-      ...existingContext,
-      ...context
-    });
+    try {
+      const contextKey = this.getContextKey();
+      const existingContext = this.contextMap.get(contextKey) || {};
+      this.contextMap.set(contextKey, {
+        ...existingContext,
+        ...safeSerialize(context)
+      });
+    } catch (err) {
+      console.error('Error setting context:', err.message);
+    }
     return this;
   }
 
   clearContext() {
-    const contextKey = this.getContextKey();
-    this.contextMap.delete(contextKey);
+    try {
+      const contextKey = this.getContextKey();
+      this.contextMap.delete(contextKey);
+    } catch (err) {
+      console.error('Error clearing context:', err.message);
+    }
     return this;
   }
 
   getCurrentContext() {
-    const contextKey = this.getContextKey();
-    return this.contextMap.get(contextKey) || this.defaultContext;
+    try {
+      const contextKey = this.getContextKey();
+      return this.contextMap.get(contextKey) || this.defaultContext;
+    } catch (err) {
+      return this.defaultContext;
+    }
   }
 
   getContextKey() {
@@ -209,119 +222,218 @@ class EnterpriseLogger {
     return process.pid.toString();
   }
 
-  // Prepare log data
+  // Prepare log data - with recursion protection
   prepareLogData(message, meta = {}) {
-    // Convert message to string if it's an object
-    let logMessage = message;
-    let logMeta = { ...meta };
+    try {
+      // Convert message to string if it's an object
+      let logMessage = message;
+      let logMeta = {};
 
-    if (message === null) {
-      logMessage = 'null';
-    } else if (message === undefined) {
-      logMessage = 'undefined';
-    } else if (typeof message === 'object') {
-      if (message instanceof Error) {
-        logMessage = message.message;
-        logMeta = {
-          ...logMeta,
-          error: message.message,
-          stack: message.stack,
-          name: message.name,
-          ...(message.code && { code: message.code })
-        };
+      // Safely copy meta
+      try {
+        logMeta = { ...meta };
+      } catch (err) {
+        logMeta = { metaError: 'Could not copy meta' };
+      }
+
+      if (message === null) {
+        logMessage = 'null';
+      } else if (message === undefined) {
+        logMessage = 'undefined';
+      } else if (typeof message === 'object') {
+        if (message instanceof Error) {
+          logMessage = message.message;
+          logMeta = {
+            ...logMeta,
+            error: message.message,
+            stack: message.stack,
+            name: message.name,
+            ...(message.code && { code: message.code })
+          };
+        } else {
+          // For objects, make them part of meta
+          logMessage = 'Object log';
+          try {
+            logMeta = {
+              ...logMeta,
+              data: safeSerialize(message)
+            };
+          } catch (err) {
+            logMeta.data = '[Serialization failed]';
+          }
+        }
       } else {
-        // For objects, make them part of meta
-        logMessage = 'Object log';
-        logMeta = {
-          ...logMeta,
-          data: safeSerialize(message)
-        };
+        logMessage = String(message);
       }
-    } else {
-      logMessage = String(message);
+
+      // Add context - wrapped in try-catch
+      let context = {};
+      try {
+        context = this.getCurrentContext();
+      } catch (err) {
+        // Ignore context errors
+      }
+      
+      // Sanitize meta - wrapped in try-catch
+      let sanitizedMeta = logMeta;
+      try {
+        sanitizedMeta = this.sanitizeMeta(safeSerialize(logMeta));
+      } catch (err) {
+        // If sanitization fails, use raw meta
+      }
+
+      return {
+        message: logMessage,
+        meta: {
+          ...context,
+          ...sanitizedMeta,
+          environment: process.env.NODE_ENV || 'development',
+          service: 'vortexhive-chat',
+          pid: process.pid
+        }
+      };
+    } catch (err) {
+      // If prepareLogData fails completely, return safe defaults
+      return {
+        message: String(message || 'Log preparation failed'),
+        meta: {
+          error: 'Log preparation error',
+          originalError: err.message
+        }
+      };
     }
-
-    // Add context
-    const context = this.getCurrentContext();
-    
-    // Sanitize and serialize meta
-    const sanitizedMeta = this.sanitizeMeta(safeSerialize(logMeta));
-
-    return {
-      message: logMessage,
-      meta: {
-        ...context,
-        ...sanitizedMeta,
-        environment: process.env.NODE_ENV || 'development',
-        service: 'vortexhive-chat',
-        pid: process.pid
-      }
-    };
   }
 
   info(message, meta = {}) {
-    const { message: logMessage, meta: logMeta } = this.prepareLogData(message, meta);
-    this.logger.info(logMessage, logMeta);
+    if (this.isLogging) return; // Prevent recursion
+    
+    try {
+      this.isLogging = true;
+      const { message: logMessage, meta: logMeta } = this.prepareLogData(message, meta);
+      this.logger.info(logMessage, logMeta);
+    } catch (err) {
+      console.error('Logger.info error:', err.message);
+    } finally {
+      this.isLogging = false;
+    }
   }
 
   error(message, meta = {}) {
-    const { message: logMessage, meta: logMeta } = this.prepareLogData(message, meta);
-    
-    // Handle error objects in meta
-    if (meta instanceof Error) {
-      logMeta.error = meta.message;
-      logMeta.stack = meta.stack;
-      logMeta.name = meta.name;
-      if (meta.code) logMeta.code = meta.code;
-    } else if (meta.error instanceof Error) {
-      logMeta.errorMessage = meta.error.message;
-      logMeta.errorStack = meta.error.stack;
-      logMeta.errorName = meta.error.name;
-      if (meta.error.code) logMeta.errorCode = meta.error.code;
+    if (this.isLogging) {
+      // If already logging, fall back to console to prevent recursion
+      console.error('Logger error (recursive call prevented):', message, meta);
+      return;
     }
     
-    this.logger.error(logMessage, logMeta);
+    try {
+      this.isLogging = true;
+      const { message: logMessage, meta: logMeta } = this.prepareLogData(message, meta);
+      
+      // Handle error objects in meta
+      if (meta instanceof Error) {
+        logMeta.error = meta.message;
+        logMeta.stack = meta.stack;
+        logMeta.name = meta.name;
+        if (meta.code) logMeta.code = meta.code;
+      } else if (meta && meta.error instanceof Error) {
+        logMeta.errorMessage = meta.error.message;
+        logMeta.errorStack = meta.error.stack;
+        logMeta.errorName = meta.error.name;
+        if (meta.error.code) logMeta.errorCode = meta.error.code;
+      }
+      
+      this.logger.error(logMessage, logMeta);
+    } catch (err) {
+      console.error('Logger.error error:', err.message, 'Original:', message);
+    } finally {
+      this.isLogging = false;
+    }
   }
 
   warn(message, meta = {}) {
-    const { message: logMessage, meta: logMeta } = this.prepareLogData(message, meta);
-    this.logger.warn(logMessage, logMeta);
+    if (this.isLogging) return; // Prevent recursion
+    
+    try {
+      this.isLogging = true;
+      const { message: logMessage, meta: logMeta } = this.prepareLogData(message, meta);
+      this.logger.warn(logMessage, logMeta);
+    } catch (err) {
+      console.error('Logger.warn error:', err.message);
+    } finally {
+      this.isLogging = false;
+    }
   }
 
   debug(message, meta = {}) {
-    const { message: logMessage, meta: logMeta } = this.prepareLogData(message, meta);
-    this.logger.debug(logMessage, logMeta);
+    if (this.isLogging) return; // Prevent recursion
+    
+    try {
+      this.isLogging = true;
+      const { message: logMessage, meta: logMeta } = this.prepareLogData(message, meta);
+      this.logger.debug(logMessage, logMeta);
+    } catch (err) {
+      console.error('Logger.debug error:', err.message);
+    } finally {
+      this.isLogging = false;
+    }
   }
 
   audit(action, meta = {}) {
-    const { meta: logMeta } = this.prepareLogData(action, meta);
-    this.logger.info('AUDIT', {
-      ...logMeta,
-      action,
-      audit: true
-    });
+    if (this.isLogging) return;
+    
+    try {
+      this.isLogging = true;
+      const { meta: logMeta } = this.prepareLogData(action, meta);
+      this.logger.info('AUDIT', {
+        ...logMeta,
+        action,
+        audit: true
+      });
+    } catch (err) {
+      console.error('Logger.audit error:', err.message);
+    } finally {
+      this.isLogging = false;
+    }
     return this;
   }
 
   performance(operation, duration, meta = {}) {
-    const { meta: logMeta } = this.prepareLogData(operation, meta);
-    this.logger.info('PERFORMANCE', {
-      ...logMeta,
-      operation,
-      duration: typeof duration === 'number' ? `${duration}ms` : String(duration),
-      performanceMetric: true
-    });
+    if (this.isLogging) return;
+    
+    try {
+      this.isLogging = true;
+      const { meta: logMeta } = this.prepareLogData(operation, meta);
+      this.logger.info('PERFORMANCE', {
+        ...logMeta,
+        operation,
+        duration: typeof duration === 'number' ? `${duration}ms` : String(duration),
+        performanceMetric: true
+      });
+    } catch (err) {
+      console.error('Logger.performance error:', err.message);
+    } finally {
+      this.isLogging = false;
+    }
     return this;
   }
 
   security(event, meta = {}) {
-    const { meta: logMeta } = this.prepareLogData(event, meta);
-    this.logger.warn('SECURITY', {
-      ...logMeta,
-      securityEvent: event,
-      severity: meta.severity || 'medium',
-      securityAlert: true
-    });
+    if (this.isLogging) return;
+    
+    try {
+      this.isLogging = true;
+      const { meta: logMeta } = this.prepareLogData(event, meta);
+      this.logger.warn('SECURITY', {
+        ...logMeta,
+        securityEvent: event,
+        severity: meta.severity || 'medium',
+        securityAlert: true
+      });
+    } catch (err) {
+      console.error('Logger.security error:', err.message);
+    } finally {
+      this.isLogging = false;
+    }
     return this;
   }
 
@@ -330,10 +442,8 @@ class EnterpriseLogger {
 
     let sanitized;
     try {
-      // Create a deep copy
       sanitized = JSON.parse(JSON.stringify(meta));
     } catch (error) {
-      // If JSON fails, do shallow copy
       sanitized = { ...meta };
     }
 
@@ -346,16 +456,20 @@ class EnterpriseLogger {
     const sanitizeObject = (obj) => {
       if (!obj || typeof obj !== 'object') return;
       
-      Object.keys(obj).forEach(key => {
-        const lowerKey = key.toLowerCase();
-        const isSensitive = sensitiveFields.some(field => lowerKey.includes(field));
-        
-        if (typeof obj[key] === 'object' && obj[key] !== null) {
-          sanitizeObject(obj[key]);
-        } else if (isSensitive && typeof obj[key] === 'string') {
-          obj[key] = '[REDACTED]';
-        }
-      });
+      try {
+        Object.keys(obj).forEach(key => {
+          const lowerKey = key.toLowerCase();
+          const isSensitive = sensitiveFields.some(field => lowerKey.includes(field));
+          
+          if (typeof obj[key] === 'object' && obj[key] !== null) {
+            sanitizeObject(obj[key]);
+          } else if (isSensitive && typeof obj[key] === 'string') {
+            obj[key] = '[REDACTED]';
+          }
+        });
+      } catch (err) {
+        // Ignore sanitization errors
+      }
     };
 
     sanitizeObject(sanitized);
@@ -387,7 +501,6 @@ class EnterpriseLogger {
 // Create and export singleton instance
 const logger = new EnterpriseLogger();
 
-// Export both the instance and the class
 module.exports = logger;
 module.exports.EnterpriseLogger = EnterpriseLogger;
 module.exports.logger = logger;
