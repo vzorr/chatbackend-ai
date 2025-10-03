@@ -5,6 +5,14 @@ const conversationService = require('../../services/socket/conversationService')
 const redisService = require('../../services/redis');
 
 module.exports = (io, socket) => {
+
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  console.log('🔥 SOCKET CONNECTION DETECTED');
+  console.log('Socket ID:', socket.id);
+  console.log('User:', socket.user);
+  console.log('Time:', new Date().toISOString());
+  console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  
   const userId = socket.user.id;
   const socketId = socket.id;
   
