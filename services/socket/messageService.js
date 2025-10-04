@@ -9,15 +9,17 @@ const logger = require('../../utils/logger');
 class MessageService {
 
 
+// services/socket/messageService.js
+
 async handleSendMessage(io, socket, payload) {
   // Extract and validate payload
-  console.log('📥 Incoming payload:', JSON.stringify(payload, null, 2));
+  console.log('🔥 Incoming payload:', JSON.stringify(payload, null, 2));
   console.log("payload.clientTempId:", payload.clientTempId);
   
   const {
     jobId = payload.jobId,
     messageId = uuidv4(),
-    clientTempId = payload.clientTempId || null, // ✅ Accept string temp ID from client
+    clientTempId = payload.clientTempId || null,
     receiverId,
     conversationId,
     messageType = 'text',
@@ -35,7 +37,7 @@ async handleSendMessage(io, socket, payload) {
   let targetConversationId = conversationId;
 
   try {
-    // ✅ ENSURE DB INITIALIZATION
+    // Ensure DB initialization
     if (!db.isInitialized()) {
       logger.info('Database not initialized, waiting...');
       await db.waitForInitialization();
@@ -48,7 +50,7 @@ async handleSendMessage(io, socket, payload) {
       throw new Error('Required models not initialized');
     }
 
-    // ✅ ENHANCED: Better conversation resolution logic
+    // CONVERSATION RESOLUTION - Use ConversationService
     if (!targetConversationId && receiverId) {
       console.log('🔍 Finding or creating conversation:', {
         userId,
@@ -57,69 +59,49 @@ async handleSendMessage(io, socket, payload) {
         hasJobId: !!jobId
       });
 
-      // ✅ STEP 1: Try to find existing conversation using enhanced method
       const conversationService = require('./conversationService');
-      const existingConversation = await conversationService.findDirectConversation(
+      
+      // Use conversationService for proper separation of concerns
+      targetConversationId = await conversationService.findOrCreateConversation(
         userId, 
         receiverId, 
-        jobId // ✅ This will be null for direct messages, jobId for job chats
+        jobId,
+        payload.jobTitle
       );
 
-      if (existingConversation) {
-        targetConversationId = existingConversation.id;
-        console.log('✅ Using existing conversation:', {
-          conversationId: targetConversationId,
-          type: existingConversation.type,
-          jobId: existingConversation.jobId,
-          participantCount: existingConversation.participantIds?.length
-        });
-      } else {
-        // ✅ STEP 2: Create new conversation with proper type and metadata
-        console.log('🔨 Creating new conversation:', {
-          userId,
-          receiverId,
-          jobId,
-          type: jobId ? 'job_chat' : 'direct_message'
-        });
-        
-        targetConversationId = await this.createNewConversation(
-          userId, 
-          receiverId, 
-          jobId,
-          payload.jobTitle // Pass job title if available
-        );
-        
-        console.log('✅ Created new conversation:', targetConversationId);
-      }
+      console.log('✅ Using conversation:', {
+        conversationId: targetConversationId,
+        isNew: !conversationId
+      });
       
       // Join the conversation room for real-time updates
       socket.join(`conversation:${targetConversationId}`);
     }
 
-    // ✅ VALIDATION: Ensure we have a target conversation
+    // Validation: Ensure we have a target conversation
     if (!targetConversationId) {
       throw new Error('Could not determine target conversation ID');
     }
 
-    // ✅ ENHANCED: Better content processing
+    // Content processing
     const finalTextContent = textMsg || text || '';
     const finalImages = messageImages.length ? messageImages : images;
     const finalAudio = audioFile || audio;
 
-    // ✅ VALIDATION: Ensure we have some content
+    // Validation: Ensure we have some content
     if (!finalTextContent && !finalImages.length && !finalAudio && !attachments.length) {
       throw new Error('Message must contain text, images, audio, or attachments');
     }
 
-    // ✅ ENHANCED: Better message ID handling
+    // Message ID handling
     const isTempId = typeof messageId === 'string' && messageId.startsWith('temp-');
     const safeMessageId = isTempId ? undefined : messageId;
 
-    // ✅ ENHANCED: Better message data structure
+    // Build message data structure
     const messageData = {
-      ...(safeMessageId && { id: safeMessageId }), // Only include if valid UUID
+      ...(safeMessageId && { id: safeMessageId }),
       conversationId: targetConversationId,
-      jobId: jobId || null, // ✅ Explicitly set jobId
+      jobId: jobId || null,
       senderId: userId,
       receiverId: receiverId || null,
       type: messageType,
@@ -131,14 +113,13 @@ async handleSendMessage(io, socket, payload) {
         attachments
       },
       status: 'sent',
-      clientTempId, // ✅ Used for frontend matching
+      clientTempId,
       deleted: false,
       createdAt: new Date(),
       updatedAt: new Date()
     };
 
-    // ✅ Enhanced logging
-    console.log('🧾 Prepared messageData for DB insert:', {
+    console.log('📋 Prepared messageData for DB insert:', {
       id: messageData.id || '[auto-generated]',
       clientTempId: messageData.clientTempId,
       conversationId: messageData.conversationId,
@@ -146,7 +127,7 @@ async handleSendMessage(io, socket, payload) {
       senderId: messageData.senderId,
       receiverId: messageData.receiverId,
       type: messageData.type,
-      contentText: messageData.content.text?.substring(0, 50) + '...', // Truncate for logging
+      contentText: messageData.content.text?.substring(0, 50) + '...',
       hasImages: messageData.content.images?.length > 0,
       hasAudio: !!messageData.content.audio,
       hasAttachments: messageData.content.attachments?.length > 0,
@@ -154,10 +135,9 @@ async handleSendMessage(io, socket, payload) {
       deleted: messageData.deleted
     });
 
-    // ✅ TRANSACTION: Wrap database operations in transaction for consistency  
+    // Transaction handling
     let transaction;
     try {
-      // Try multiple ways to get sequelize instance
       let sequelizeInstance = null;
       if (models.sequelize) {
         sequelizeInstance = models.sequelize;
@@ -165,17 +145,14 @@ async handleSendMessage(io, socket, payload) {
         sequelizeInstance = models.Message.sequelize;
       } else if (db.sequelize) {
         sequelizeInstance = db.sequelize;
-      } else {
-        // Fallback: create transaction without explicit sequelize reference
-        logger.warn('Using fallback transaction method - no sequelize instance found');
-        transaction = null;
       }
       
       if (sequelizeInstance) {
         transaction = await sequelizeInstance.transaction();
         console.log('✅ Transaction created successfully');
       } else {
-        console.log('⚠️ Proceeding without transaction');
+        logger.warn('Using fallback - no sequelize instance found');
+        transaction = null;
       }
       
     } catch (transactionError) {
@@ -183,7 +160,6 @@ async handleSendMessage(io, socket, payload) {
         error: transactionError.message,
         stack: transactionError.stack
       });
-      // Continue without transaction but log the issue
       transaction = null;
       console.log('⚠️ Transaction creation failed, proceeding without transaction');
     }
@@ -199,7 +175,7 @@ async handleSendMessage(io, socket, payload) {
       await Conversation.update(
         { 
           lastMessageAt: new Date(),
-          // ✅ Update job info if this is the first message in a job conversation
+          // Update job info if this is a job conversation
           ...(jobId && { jobId, jobTitle: payload.jobTitle || null })
         },
         { 
@@ -209,7 +185,7 @@ async handleSendMessage(io, socket, payload) {
       );
       console.log('✅ Conversation updated with last message time');
 
-      // ✅ ENHANCED: Better unread count management
+      // Update unread counts for other participants
       const incrementOptions = transaction ? { transaction } : {};
       const unreadUpdateResult = await ConversationParticipant.increment(
         'unreadCount',
@@ -217,7 +193,7 @@ async handleSendMessage(io, socket, payload) {
           where: { 
             conversationId: targetConversationId, 
             userId: { [Op.ne]: userId },
-            leftAt: null // ✅ Only increment for active participants
+            leftAt: null
           },
           ...incrementOptions
         }
@@ -231,13 +207,13 @@ async handleSendMessage(io, socket, payload) {
         console.log('✅ Transaction committed successfully');
       }
       
-      // ✅ Queue for additional processing (notifications, etc.)
+      // Queue for additional processing (notifications, etc.)
       await queueService.enqueueMessage({
         ...messageData,
-        id: message.id // Use the actual database ID
+        id: message.id
       });
 
-      // ✅ ENHANCED: Better sender information
+      // Build sender information
       const sender = {
         id: userId,
         name: socket.user.name || 'Unknown User',
@@ -245,24 +221,24 @@ async handleSendMessage(io, socket, payload) {
         role: socket.user.role || 'user'
       };
 
-      // ✅ ENHANCED: Complete message object for real-time updates
+      // Complete message object for real-time updates
       const messageWithSender = { 
         ...messageData, 
         id: message.id, 
         sender,
-        timestamp: message.createdAt.toISOString() // Use actual DB timestamp
+        timestamp: message.createdAt.toISOString()
       };
 
-      // ✅ Emit to all conversation participants
+      // Broadcast to all conversation participants
       console.log('📡 Broadcasting new message to conversation:', targetConversationId);
       io.to(`conversation:${targetConversationId}`).emit('new_message', messageWithSender);
 
-      // ✅ ENHANCED: Better confirmation to sender
+      // Send confirmation to sender
       const confirmationData = {
         id: message.id,
         messageId: message.id,
         clientTempId: clientTempId,
-        tempId: clientTempId, // Legacy compatibility
+        tempId: clientTempId,
         conversationId: targetConversationId,
         jobId: jobId || null,
         status: 'sent',
@@ -273,18 +249,18 @@ async handleSendMessage(io, socket, payload) {
       console.log('🚀 Emitting message_sent confirmation:', confirmationData);
       socket.emit('message_sent', confirmationData);
 
-      // ✅ ENHANCED: Return comprehensive result
+      // Return comprehensive result
       return {
         success: true,
         message: messageWithSender,
         conversationId: targetConversationId,
         participants: await this.getOtherParticipants(targetConversationId, userId),
         notifyRecipients: true,
-        isNewConversation: !conversationId // Flag if this created a new conversation
+        isNewConversation: !conversationId
       };
 
     } catch (dbError) {
-      // Rollback transaction on database error if it exists
+      // Rollback transaction on database error
       if (transaction) {
         await transaction.rollback();
         console.log('🔄 Transaction rolled back due to error');
@@ -293,7 +269,7 @@ async handleSendMessage(io, socket, payload) {
     }
 
   } catch (error) {
-    // ✅ ENHANCED: Better error handling and logging
+    // Error handling and logging
     const errorDetails = {
       userId,
       receiverId,
@@ -312,7 +288,7 @@ async handleSendMessage(io, socket, payload) {
 
     logger.error('Error handling send message', errorDetails);
 
-    // ✅ Emit error to sender for better UX
+    // Emit error to sender for better UX
     socket.emit('message_send_error', {
       clientTempId: clientTempId,
       error: error.message,
@@ -324,113 +300,29 @@ async handleSendMessage(io, socket, payload) {
   }
 }
 
-/**
- * Create new conversation based on context (job chat vs direct message)
- */
-async createNewConversation(senderId, receiverId, jobId = null, jobTitle = null) {
+// Helper method - keep this
+async getOtherParticipants(conversationId, excludeUserId) {
   try {
     const models = db.getModels();
-    const { Conversation, ConversationParticipant } = models;
-    
-    if (!Conversation || !ConversationParticipant) {
-      throw new Error('Required models not initialized');
-    }
-    
-    const newConversationId = uuidv4();
-    
-    // ✅ Create conversation with proper type and metadata
-    const conversationData = {
-      id: newConversationId,
-      type: jobId ? 'job_chat' : 'direct_message',
-      participantIds: [senderId, receiverId],
-      createdBy: senderId,
-      status: 'active',
-      lastMessageAt: new Date()
-    };
-    
-    // ✅ Add job-specific fields only for job chats
-    if (jobId) {
-      conversationData.jobId = jobId;
-      if (jobTitle) {
-        conversationData.jobTitle = jobTitle;
-      }
-    }
-    
-    //const transaction = await db.sequelize.transaction();
-    const transaction = await Conversation.sequelize.transaction();
-    try {
-      // Create conversation
-      await Conversation.create(conversationData, { transaction });
+    const { ConversationParticipant } = models;
 
-      // Create participant records
-      await ConversationParticipant.bulkCreate([
-        { 
-          id: uuidv4(), 
-          conversationId: newConversationId, 
-          userId: senderId, 
-          unreadCount: 0, 
-          joinedAt: new Date() 
-        },
-        { 
-          id: uuidv4(), 
-          conversationId: newConversationId, 
-          userId: receiverId, 
-          unreadCount: 0, // Will be incremented when message is sent
-          joinedAt: new Date() 
-        }
-      ], { transaction });
-
-      await transaction.commit();
-
-      logger.info('Created new conversation:', {
-        conversationId: newConversationId,
-        type: conversationData.type,
-        jobId: conversationData.jobId,
-        jobTitle: conversationData.jobTitle,
-        participants: [senderId, receiverId]
-      });
-
-      return newConversationId;
-
-    } catch (dbError) {
-      await transaction.rollback();
-      throw dbError;
+    if (!ConversationParticipant) {
+      throw new Error('ConversationParticipant model not initialized');
     }
 
-  } catch (error) {
-    logger.error('Error creating new conversation', {
-      senderId,
-      receiverId,
-      jobId,
-      jobTitle,
-      error: error.message,
-      stack: error.stack
+    const participants = await ConversationParticipant.findAll({
+      where: { conversationId, userId: { [Op.ne]: excludeUserId } }
     });
-    throw error;
+    return participants.map(p => p.userId);
+  } catch (error) {
+    logger.error('Error getting other participants', {
+      conversationId,
+      error: error.message
+    });
+    return [];
   }
 }
 
-  async getOtherParticipants(conversationId, excludeUserId) {
-    try {
-      const models = db.getModels();
-      const { ConversationParticipant } = models;
-
-      if (!ConversationParticipant) {
-        throw new Error('ConversationParticipant model not initialized');
-      }
-
-      const participants = await ConversationParticipant.findAll({
-        where: { conversationId, userId: { [Op.ne]: excludeUserId } }
-      });
-      return participants.map(p => p.userId);
-    } catch (error) {
-      logger.error('Error getting other participants', {
-        conversationId,
-        error: error.message
-      });
-      return [];
-    }
-  }
 
   async handleMarkRead(io, socket, { messageIds, conversationId }) {
     const userId = socket.user.id;
