@@ -1,11 +1,10 @@
-// config/config.js - Fixed Elasticsearch configuration
+// config/config.js - Fixed File Upload Configuration
 module.exports = {
 
   app: {
     environment: process.env.APP_ENVIRONMENT || 'development',
     url: process.env.APP_URL || 'http://localhost:3001',
     baseUrl: process.env.API_BASE_URL || 'http://localhost:3001',
-    // Add SSL/domain support
     domain: process.env.DOMAIN || 'localhost',
     ssl: {
       enabled: process.env.SSL_ENABLED === 'true',
@@ -22,7 +21,6 @@ module.exports = {
     corsOrigin: process.env.CORS_ORIGIN || '*',
     socketPath: process.env.SOCKET_PATH || '/socket.io',
     socketUrl: process.env.SOCKET_URL || 'http://localhost:5000',
-    // Add proxy configuration
     proxy: {
       enabled: process.env.TRUST_PROXY === 'true',
       protocol: process.env.PROTOCOL || 'http',
@@ -97,28 +95,51 @@ module.exports = {
     }
   },
 
-  // File Upload
+  // UPDATED: Enhanced File Upload Configuration
   fileUpload: {
+    enabled: process.env.FILE_UPLOAD_ENABLED !== 'false',
     provider: process.env.FILE_UPLOAD_PROVIDER || 'local',
-    maxSize: parseInt(process.env.MAX_FILE_SIZE || '10485760'), // 10MB
-    allowedTypes: [
+    uploadDir: process.env.UPLOAD_DIR || './uploads',
+    maxFileSize: parseInt(process.env.MAX_FILE_SIZE_MB || '10') * 1024 * 1024, // Convert MB to bytes
+    maxBatchFiles: parseInt(process.env.MAX_BATCH_FILES || '5'),
+    
+    // Categorized file types (validator supports both formats)
+    allowedTypes: {
+      images: (process.env.ALLOWED_IMAGE_TYPES || 'jpeg,jpg,png,gif,webp').split(','),
+      audio: (process.env.ALLOWED_AUDIO_TYPES || 'mp3,wav,ogg,m4a,aac').split(','),
+      documents: (process.env.ALLOWED_DOC_TYPES || 'pdf,doc,docx,txt,zip,rar').split(',')
+    },
+    
+    // MIME types for validation
+    allowedMimeTypes: [
       'image/jpeg',
       'image/png',
       'image/gif',
       'image/webp',
       'audio/mpeg',
       'audio/wav',
-      'application/pdf'
+      'audio/ogg',
+      'audio/mp4',
+      'audio/aac',
+      'application/pdf',
+      'application/msword',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'text/plain',
+      'application/zip',
+      'application/x-rar-compressed'
     ],
+    
     s3: {
       bucket: process.env.S3_BUCKET_NAME,
-      region: process.env.AWS_REGION,
+      region: process.env.AWS_REGION || 'us-east-1',
       accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+      endpoint: process.env.S3_ENDPOINT,
+      forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true'
     }
   },
 
-  // FIXED: Logging Configuration with optional Elasticsearch
+  // Logging Configuration
   logging: {
     level: process.env.LOG_LEVEL || 'info',
     elasticsearch: {
@@ -134,7 +155,7 @@ module.exports = {
 
   // Rate Limiting
   rateLimiting: {
-    windowMs: parseInt(process.env.RATE_LIMIT_WINDOW || '60000'), // 1 minute
+    windowMs: parseInt(process.env.RATE_LIMIT_WINDOW || '60000'),
     max: parseInt(process.env.RATE_LIMIT_MAX || '100'),
     skipSuccessfulRequests: false,
     api: {
@@ -150,7 +171,7 @@ module.exports = {
 
   // Sync Configuration
   sync: {
-    userSyncInterval: parseInt(process.env.USER_SYNC_INTERVAL || '3600000'), // 1 hour
+    userSyncInterval: parseInt(process.env.USER_SYNC_INTERVAL || '3600000'),
     batchSize: parseInt(process.env.SYNC_BATCH_SIZE || '100'),
     retryAttempts: parseInt(process.env.SYNC_RETRY_ATTEMPTS || '3')
   },
@@ -160,7 +181,7 @@ module.exports = {
     messageProcessInterval: parseInt(process.env.QUEUE_MESSAGE_INTERVAL || '500'),
     presenceProcessInterval: parseInt(process.env.QUEUE_PRESENCE_INTERVAL || '1000'),
     notificationProcessInterval: parseInt(process.env.QUEUE_NOTIFICATION_INTERVAL || '2000'),
-    offlineMessageTTL: parseInt(process.env.OFFLINE_MESSAGE_TTL || '604800') // 7 days
+    offlineMessageTTL: parseInt(process.env.OFFLINE_MESSAGE_TTL || '604800')
   },
 
   // Security
@@ -170,12 +191,11 @@ module.exports = {
     sessionSecret: process.env.SESSION_SECRET || 'default-secret-change-this',
     encryptionKey: process.env.ENCRYPTION_KEY,
     hashRounds: parseInt(process.env.HASH_ROUNDS || '10'),
-    // SSL/HTTPS security settings
     ssl: {
       behindProxy: process.env.TRUST_PROXY === 'true',
       hsts: {
         enabled: process.env.HSTS_ENABLED === 'true',
-        maxAge: parseInt(process.env.HSTS_MAX_AGE || '31536000'), // 1 year
+        maxAge: parseInt(process.env.HSTS_MAX_AGE || '31536000'),
         includeSubDomains: process.env.HSTS_INCLUDE_SUBDOMAINS === 'true',
         preload: process.env.HSTS_PRELOAD === 'true'
       },
@@ -183,21 +203,18 @@ module.exports = {
     }
   },
 
-  // SSL Configuration (for direct SSL if needed)
+  // SSL Configuration
   ssl: {
     enabled: process.env.SSL_ENABLED === 'true',
     certificatePath: process.env.SSL_CERT_PATH,
     privateKeyPath: process.env.SSL_KEY_PATH,
     caPath: process.env.SSL_CA_PATH,
     passphrase: process.env.SSL_PASSPHRASE,
-    // TLS options
     secureProtocol: process.env.SSL_SECURE_PROTOCOL || 'TLSv1_2_method',
     ciphers: process.env.SSL_CIPHERS,
     honorCipherOrder: process.env.SSL_HONOR_CIPHER_ORDER === 'true',
-    // Client certificate settings (if needed)
     requestCert: process.env.SSL_REQUEST_CERT === 'true',
     rejectUnauthorized: process.env.SSL_REJECT_UNAUTHORIZED !== 'false',
-    // Development settings
     allowSelfSigned: process.env.SSL_ALLOW_SELF_SIGNED === 'true'
   },
 
@@ -280,7 +297,7 @@ module.exports = {
     timeout: parseInt(process.env.WEBHOOK_TIMEOUT || '30000')
   },
 
-  // CORS Configuration (detailed)
+  // CORS Configuration
   cors: {
     origin: process.env.CORS_ORIGIN || '*',
     methods: (process.env.CORS_METHODS || 'GET,POST,PUT,DELETE,OPTIONS,PATCH').split(','),

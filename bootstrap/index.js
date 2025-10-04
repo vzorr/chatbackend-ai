@@ -1,4 +1,4 @@
-// bootstrap/index.js - Clean version without complex logging
+// bootstrap/index.js - Updated with File Upload
 const { logger } = require('../utils/logger');
 const config = require('../config/config');
 const { validateEnvironment } = require('./validators/environment');
@@ -18,6 +18,7 @@ const { initializeMetrics } = require('./initializers/metrics');
 const { logEnvironmentInfo } = require('./initializers/environment-info');
 const { initializeModels } = require('./initializers/models');
 const { initializeNotifications } = require('./initializers/notifications');
+const { initializeFileUpload, setupFileRoutes } = require('./initializers/file-upload'); // NEW
 
 class Bootstrap {
   constructor() {
@@ -36,50 +37,54 @@ class Bootstrap {
     
     try {
       // Step 0: Handle cluster mode
-      console.log('📋 [Step 0/7] Initializing cluster mode...');
+      console.log('📋 [Step 0/8] Initializing cluster mode...');
       this.clusterInfo = await initializeCluster();
-      console.log('✅ [Step 0/7] Cluster mode initialized');
+      console.log('✅ [Step 0/8] Cluster mode initialized');
       
-      // If this is the primary process, workers will handle the server
       if (this.clusterInfo.isMaster) {
         console.log('✅ Primary process initialized, workers will start servers');
         return { isPrimary: true };
       }
 
       // Step 1: Log environment information
-      console.log('📋 [Step 1/7] Logging environment information...');
+      console.log('📋 [Step 1/8] Logging environment information...');
       await logEnvironmentInfo();
-      console.log('✅ [Step 1/7] Environment information logged');
+      console.log('✅ [Step 1/8] Environment information logged');
 
       // Step 2: Validate environment and dependencies
-      console.log('📋 [Step 2/7] Validating prerequisites...');
+      console.log('📋 [Step 2/8] Validating prerequisites...');
       await this.validatePrerequisites();
-      console.log('✅ [Step 2/7] Prerequisites validated');
+      console.log('✅ [Step 2/8] Prerequisites validated');
 
       // Step 3: Initialize core components
-      console.log('📋 [Step 3/7] Initializing core components...');
+      console.log('📋 [Step 3/8] Initializing core components...');
       await this.initializeCoreComponents();
-      console.log('✅ [Step 3/7] Core components initialized');
+      console.log('✅ [Step 3/8] Core components initialized');
 
       // Step 4: Configure Express app
-      console.log('📋 [Step 4/7] Configuring Express application...');
+      console.log('📋 [Step 4/8] Configuring Express application...');
       await this.configureExpressApp();
-      console.log('✅ [Step 4/7] Express application configured');
+      console.log('✅ [Step 4/8] Express application configured');
 
-      // Step 5: Initialize metrics
-      console.log('📋 [Step 5/7] Initializing metrics system...');
+      // Step 5: Initialize file upload system (NEW)
+      console.log('📋 [Step 5/8] Initializing file upload system...');
+      await initializeFileUpload();
+      console.log('✅ [Step 5/8] File upload system initialized');
+
+      // Step 6: Initialize metrics
+      console.log('📋 [Step 6/8] Initializing metrics system...');
       await initializeMetrics(this.app);
-      console.log('✅ [Step 5/7] Metrics system initialized');
+      console.log('✅ [Step 6/8] Metrics system initialized');
 
-      // Step 6: Start the server
-      console.log('📋 [Step 6/7] Starting HTTP server...');
+      // Step 7: Start the server
+      console.log('📋 [Step 7/8] Starting HTTP server...');
       await this.startServer();
-      console.log('✅ [Step 6/7] HTTP server started');
+      console.log('✅ [Step 7/8] HTTP server started');
 
-      // Step 7: Setup shutdown handlers
-      console.log('📋 [Step 7/7] Setting up shutdown handlers...');
+      // Step 8: Setup shutdown handlers
+      console.log('📋 [Step 8/8] Setting up shutdown handlers...');
       this.setupShutdownHandlers();
-      console.log('✅ [Step 7/7] Shutdown handlers configured');
+      console.log('✅ [Step 8/8] Shutdown handlers configured');
 
       const duration = Date.now() - startTime;
       console.log(`🎉 Bootstrap completed successfully in ${duration}ms!`);
@@ -95,7 +100,6 @@ class Bootstrap {
 
       this.isInitialized = true;
       
-      // Return the components needed by server.js
       return { 
         app: this.app, 
         server: this.server, 
@@ -118,7 +122,7 @@ class Bootstrap {
       
       console.log('🧹 Initiating cleanup after bootstrap failure...');
       await this.cleanup();
-      throw error; // Re-throw so server.js can handle it
+      throw error;
     }
   }
 
@@ -126,17 +130,14 @@ class Bootstrap {
     console.log('🔍 Starting prerequisites validation...');
     
     try {
-      // Validate configuration schema
-      console.log('📝 Validating configuration schema...');
+      console.log('🔍 Validating configuration schema...');
       await validateConfig(config);
       console.log('✅ Configuration schema validated');
       
-      // Validate environment variables
       console.log('🌍 Validating environment variables...');
       await validateEnvironment();
       console.log('✅ Environment variables validated');
       
-      // Validate system dependencies
       console.log('🔧 Validating system dependencies...');
       await validateDependencies();
       console.log('✅ System dependencies validated');
@@ -151,17 +152,14 @@ class Bootstrap {
     console.log('🔧 Starting core components initialization...');
     
     try {
-      // Initialize database
       console.log('🗄️ Initializing database...');
       await initializeDatabase();
       console.log('✅ Database initialized');
       
-      // Initialize database models
       console.log('📊 Initializing database models...');
       await initializeModels();
       console.log('✅ Database models initialized');
 
-      // Initialize services
       console.log('🛠️ Initializing services...');
       await initializeServices();
       console.log('✅ Services initialized');
@@ -176,29 +174,29 @@ class Bootstrap {
     console.log('🔧 Starting Express application configuration...');
     
     try {
-      // Setup Express app
       console.log('🌐 Setting up Express server...');
       const { app, server } = await setupExpress();
       this.app = app;
       this.server = server;
       console.log('✅ Express server setup complete');
       
-      // Initialize Socket.IO
       console.log('🔌 Initializing Socket.IO...');
       this.io = await initializeSocketIO(this.server);
       console.log('✅ Socket.IO initialized');
       
-      // Setup middleware stack
       console.log('📚 Setting up middleware stack...');
       await setupMiddleware(this.app);
       console.log('✅ Middleware stack configured');
       
-      // Setup routes
       console.log('🛣️ Setting up application routes...');
       await setupRoutes(this.app);
       console.log('✅ Routes configured');
       
-      // Setup error handling
+      // Setup file upload routes (NEW)
+      console.log('📁 Setting up file upload routes...');
+      await setupFileRoutes(this.app);
+      console.log('✅ File upload routes configured');
+      
       console.log('🚨 Setting up error handling...');
       await setupErrorHandling(this.app);
       console.log('✅ Error handling configured');
@@ -243,7 +241,6 @@ class Bootstrap {
         console.log('✅ Socket.IO connections closed');
       }
       
-      // Cleanup other resources
       console.log('🛠️ Cleaning up services...');
       await this.cleanupServices();
       console.log('✅ Services cleanup completed');
@@ -256,7 +253,6 @@ class Bootstrap {
   async cleanupServices() {
     console.log('🔧 Starting services cleanup...');
     
-    // Safe cleanup with error handling for each service
     const cleanupTasks = [
       {
         name: 'Database',
@@ -303,7 +299,6 @@ class Bootstrap {
         console.log(`✅ ${task.name} cleanup completed`);
       } catch (error) {
         console.error(`⚠️ ${task.name} cleanup failed:`, error.message);
-        // Continue with other cleanups even if one fails
       }
     }
     
