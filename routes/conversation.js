@@ -423,6 +423,8 @@ router.get('/:id',
 );
 
 // Create new conversation
+
+// Create new conversation
 router.post('/', 
   authenticate, 
   asyncHandler(async (req, res) => {
@@ -434,6 +436,20 @@ router.post('/',
       status = 'active' 
     } = req.body;
     const userId = req.user.id;
+    
+    // 🔍 DETAILED REQUEST LOGGING
+    logger.info('POST /conversations - Request received', {
+      userId,
+      userRole: req.user.role,
+      participantIds,
+      participantIdsType: Array.isArray(participantIds) ? 'array' : typeof participantIds,
+      participantIdsLength: participantIds?.length,
+      type,
+      jobId,
+      jobTitle,
+      status,
+      bodyKeys: Object.keys(req.body)
+    });
     
     // Validate participants
     if (!participantIds || !Array.isArray(participantIds) || participantIds.length === 0) {
@@ -470,6 +486,15 @@ router.post('/',
       const db = require('../db/models');
       const { Conversation, ConversationParticipant, User } = db;
       
+      // 🔍 MODEL LOADING CHECK
+      logger.info('Database models check', {
+        hasDb: !!db,
+        hasConversation: !!Conversation,
+        hasConversationParticipant: !!ConversationParticipant,
+        hasUser: !!User,
+        dbKeys: db ? Object.keys(db).slice(0, 10) : []
+      });
+      
       if (!Conversation || !ConversationParticipant || !User) {
         logger.error('Models not initialized in POST /', {
           hasConversation: !!Conversation,
@@ -482,21 +507,49 @@ router.post('/',
       // Ensure current user is included
       const allParticipantIds = [...new Set([userId, ...participantIds])];
       
+      // 🔍 PARTICIPANT PROCESSING
+      logger.info('Participants processing', {
+        requestedParticipantIds: participantIds,
+        currentUserId: userId,
+        allParticipantIds,
+        totalCount: allParticipantIds.length
+      });
+      
       // Verify all participants exist
+      logger.info('Looking up users in database', {
+        lookingFor: allParticipantIds
+      });
+      
       const existingUsers = await User.findAll({
         where: { id: { [Op.in]: allParticipantIds } },
         attributes: ['id', 'name', 'avatar', 'role']
+      });
+      
+      // 🔍 USER LOOKUP RESULTS
+      logger.info('User lookup completed', {
+        searchedFor: allParticipantIds,
+        foundCount: existingUsers.length,
+        foundUsers: existingUsers.map(u => ({ id: u.id, name: u.name, role: u.role }))
       });
       
       const existingUserIds = existingUsers.map(user => user.id);
       const missingUserIds = allParticipantIds.filter(id => !existingUserIds.includes(id));
       
       if (missingUserIds.length > 0) {
+        logger.error('Some users not found', {
+          missingUserIds,
+          searchedFor: allParticipantIds,
+          foundIds: existingUserIds
+        });
         throw createOperationalError(`Some participant IDs do not exist: ${missingUserIds.join(', ')}`, 400, 'INVALID_PARTICIPANTS');
       }
       
       // For direct messages, check if conversation already exists
       if (type === 'direct_message' && allParticipantIds.length === 2) {
+        logger.info('Checking for existing direct conversation', {
+          participants: allParticipantIds
+        });
+        
         const existingConversations = await Conversation.findAll({
           where: {
             type: 'direct_message',
@@ -504,6 +557,11 @@ router.post('/',
               [Op.contains]: allParticipantIds
             }
           }
+        });
+        
+        logger.info('Existing conversations check', {
+          foundCount: existingConversations.length,
+          conversationIds: existingConversations.map(c => c.id)
         });
         
         const directConversation = existingConversations.find(c => 
@@ -529,23 +587,39 @@ router.post('/',
         lastMessageAt: new Date()
       };
       
-      // Create conversation in database
+      // 🔍 CONVERSATION CREATION
+      logger.info('Creating conversation', {
+        conversationId,
+        conversationData
+      });
+      
       const conversation = await Conversation.create(conversationData);
+      
+      logger.info('Conversation created successfully', {
+        conversationId: conversation.id
+      });
       
       // Create participants records
       const participantRecords = allParticipantIds.map(pId => ({
         id: uuidv4(),
         conversationId,
         userId: pId,
-        unreadCount: pId === userId ? 0 : 0, // Start with 0 for all
+        unreadCount: pId === userId ? 0 : 0,
         joinedAt: new Date(),
-        // Default settings
         isMuted: false,
         isPinned: false,
         notificationEnabled: true
       }));
       
+      // 🔍 PARTICIPANT RECORDS CREATION
+      logger.info('Creating participant records', {
+        recordCount: participantRecords.length,
+        records: participantRecords
+      });
+      
       await ConversationParticipant.bulkCreate(participantRecords);
+      
+      logger.info('Participant records created successfully');
       
       // Format participants for response
       const participants = existingUsers
@@ -559,7 +633,7 @@ router.post('/',
           avatar: user.avatar
         }));
       
-      res.status(201).json({
+      const responseData = {
         success: true,
         conversation: {
           id: conversationId,
@@ -582,8 +656,35 @@ router.post('/',
           createdAt: conversation.createdAt,
           updatedAt: conversation.updatedAt
         }
+      };
+      
+      logger.info('Sending successful response', {
+        conversationId,
+        participantCount: participants.length
       });
+      
+      res.status(201).json(responseData);
+      
     } catch (error) {
+      // 🔍 COMPREHENSIVE ERROR LOGGING
+      logger.error('POST /conversations - Error caught', {
+        errorMessage: error.message,
+        errorName: error.name,
+        errorCode: error.code,
+        errorStack: error.stack,
+        isOperational: error.isOperational,
+        errorType: error.constructor.name,
+        userId,
+        participantIds,
+        type,
+        jobId,
+        // Sequelize specific errors
+        sql: error.sql,
+        parameters: error.parameters,
+        original: error.original?.message,
+        parent: error.parent?.message
+      });
+      
       if (error.isOperational) {
         throw error;
       }
