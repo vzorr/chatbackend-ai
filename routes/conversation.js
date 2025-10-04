@@ -1243,6 +1243,148 @@ router.delete('/:id',
   })
 );
 
+// Get messages for a conversation - ADD THIS BEFORE module.exports
+router.get('/:conversationId/messages', 
+  authenticate, 
+  asyncHandler(async (req, res) => {
+    const { conversationId } = req.params;
+    const { limit = 50, offset = 0, before, after } = req.query;
+    const userId = req.user.id;
+    
+    logger.info('GET /conversations/:conversationId/messages', {
+      conversationId,
+      userId,
+      limit,
+      offset
+    });
+    
+    if (!conversationId) {
+      throw createOperationalError('Conversation ID is required', 400, 'MISSING_CONVERSATION_ID');
+    }
+    
+    const parsedLimit = parseInt(limit);
+    const parsedOffset = parseInt(offset);
+    
+    if (isNaN(parsedLimit) || parsedLimit < 1 || parsedLimit > 100) {
+      throw createOperationalError('Limit must be between 1 and 100', 400, 'INVALID_LIMIT');
+    }
+    
+    if (isNaN(parsedOffset) || parsedOffset < 0) {
+      throw createOperationalError('Offset must be non-negative', 400, 'INVALID_OFFSET');
+    }
+    
+    try {
+      const db = require('../db/models');
+      const { Conversation, ConversationParticipant, Message, User } = db;
+      
+      if (!Conversation || !ConversationParticipant || !Message || !User) {
+        throw new Error('Database models not initialized');
+      }
+      
+      // Verify user is a participant
+      const participation = await ConversationParticipant.findOne({
+        where: { conversationId, userId }
+      });
+      
+      if (!participation) {
+        throw createOperationalError('Not a participant in this conversation', 403, 'NOT_PARTICIPANT');
+      }
+      
+      // Build where clause
+      const where = { 
+        conversationId,
+        deleted: false
+      };
+      
+      if (before) {
+        where.createdAt = { [Op.lt]: new Date(before) };
+      }
+      
+      if (after) {
+        where.createdAt = { ...where.createdAt, [Op.gt]: new Date(after) };
+      }
+      
+      logger.info('Fetching messages', {
+        where,
+        limit: parsedLimit,
+        offset: parsedOffset
+      });
+      
+      // Get messages
+      const messages = await Message.findAll({
+        where,
+        order: [['createdAt', 'ASC']], // Oldest first
+        limit: parsedLimit,
+        offset: parsedOffset
+      });
+      
+      logger.info('Messages fetched', {
+        count: messages.length,
+        conversationId
+      });
+      
+      // Get total count
+      const totalCount = await Message.count({
+        where: {
+          conversationId,
+          deleted: false
+        }
+      });
+      
+      // Format messages
+      const formattedMessages = messages.map(msg => ({
+        id: msg.id,
+        clientTempId: msg.clientTempId,
+        conversationId: msg.conversationId,
+        senderId: msg.senderId,
+        receiverId: msg.receiverId,
+        type: msg.type,
+        content: msg.contentText || msg.content,
+        status: msg.status,
+        timestamp: msg.createdAt,
+        createdAt: msg.createdAt,
+        updatedAt: msg.updatedAt,
+        replyTo: msg.replyTo,
+        isEdited: msg.isEdited || false,
+        editedAt: msg.editedAt
+      }));
+      
+      res.json({
+        success: true,
+        messages: formattedMessages,
+        pagination: {
+          limit: parsedLimit,
+          offset: parsedOffset,
+          total: totalCount,
+          hasMore: (parsedOffset + parsedLimit) < totalCount
+        }
+      });
+      
+      logger.info('Messages response sent', {
+        conversationId,
+        messageCount: formattedMessages.length,
+        total: totalCount
+      });
+      
+    } catch (error) {
+      logger.error('Error fetching messages', {
+        conversationId,
+        userId,
+        error: error.message,
+        stack: error.stack
+      });
+      
+      if (error.isOperational) {
+        throw error;
+      }
+      
+      throw createSystemError('Failed to fetch messages', error);
+    }
+  })
+);
+
+module.exports = router;
+
 // Search conversations
 router.get('/search', 
   authenticate, 
