@@ -1243,6 +1243,134 @@ router.delete('/:id',
   })
 );
 
+// routes/conversations.js
+
+/**
+ * DELETE /api/conversations/:conversationId
+ * SOFT DELETE - marks as deleted but keeps data
+ */
+router.delete('/:conversationId', authenticate, async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const userId = req.user.id;
+
+    logger.info('SOFT DELETE conversation request', {
+      conversationId,
+      userId
+    });
+
+    // Calls deleteConversation() - soft delete
+    const result = await conversationService.deleteConversation(conversationId, userId);
+
+    // Broadcast to sockets
+    if (req.app.get('io')) {
+      const io = req.app.get('io');
+      io.to(`conversation:${conversationId}`).emit('conversation_deleted', {
+        conversationId,
+        deletedBy: userId,
+        deletedAt: result.deletedAt,
+        method: 'soft_delete',
+        timestamp: Date.now()
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Conversation deleted successfully',
+      data: result
+    });
+
+  } catch (error) {
+    logger.error('Error in soft delete route', {
+      error: error.message,
+      conversationId: req.params.conversationId
+    });
+
+    if (error.message.includes('Not authorized')) {
+      return res.status(403).json({
+        success: false,
+        error: 'FORBIDDEN',
+        message: error.message
+      });
+    }
+
+    if (error.message.includes('not found')) {
+      return res.status(404).json({
+        success: false,
+        error: 'NOT_FOUND',
+        message: error.message
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      error: 'INTERNAL_SERVER_ERROR',
+      message: 'Failed to delete conversation'
+    });
+  }
+});
+
+/**
+ * DELETE /api/conversations/:conversationId/hard
+ * HARD DELETE - permanently removes all data (ADMIN ONLY)
+ */
+router.delete('/:conversationId/hard', authenticate, async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const userId = req.user.id;
+
+    // Permission check - only admins
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({
+        success: false,
+        error: 'FORBIDDEN',
+        message: 'Only administrators can permanently delete conversations'
+      });
+    }
+
+    logger.warn('HARD DELETE conversation request', {
+      conversationId,
+      userId,
+      userRole: req.user.role
+    });
+
+    // Calls hardDeleteConversation() - permanent deletion
+    const result = await conversationService.hardDeleteConversation(conversationId, userId);
+
+    // Broadcast to sockets
+    if (req.app.get('io')) {
+      const io = req.app.get('io');
+      io.to(`conversation:${conversationId}`).emit('conversation_permanently_deleted', {
+        conversationId,
+        deletedBy: userId,
+        method: 'hard_delete',
+        permanent: true,
+        timestamp: Date.now()
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Conversation permanently deleted',
+      data: result
+    });
+
+  } catch (error) {
+    logger.error('Error in hard delete route', {
+      error: error.message,
+      conversationId: req.params.conversationId
+    });
+
+    res.status(500).json({
+      success: false,
+      error: 'INTERNAL_SERVER_ERROR',
+      message: 'Failed to permanently delete conversation'
+    });
+  }
+});
+
+
+
 // Get messages for a conversation - ADD THIS BEFORE module.exports
 router.get('/:conversationId/messages', 
   authenticate, 

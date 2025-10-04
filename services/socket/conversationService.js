@@ -675,6 +675,221 @@ async findDirectConversation(userId1, userId2, jobId = null) {
 /**
  * Find or create conversation atomically (prevents duplicates)
  */
+
+// services/socket/conversationService.js
+
+// services/socket/conversationService.js
+
+/**
+ * Soft delete - marks as deleted but keeps data
+ */
+async deleteConversation(conversationId, userId) {
+  try {
+    await this.ensureDbInitialized();
+    
+    const models = db.getModels();
+    const { Conversation, ConversationParticipant, Message } = models;
+    
+    if (!Conversation || !ConversationParticipant || !Message) {
+      throw new Error('Required models not available');
+    }
+    
+    // Verify user is a participant
+    const participation = await ConversationParticipant.findOne({
+      where: { conversationId, userId }
+    });
+    
+    if (!participation) {
+      throw new Error('Not authorized to delete this conversation');
+    }
+    
+    const conversation = await Conversation.findByPk(conversationId);
+    
+    if (!conversation) {
+      throw new Error('Conversation not found');
+    }
+    
+    if (conversation.deleted) {
+      throw new Error('Conversation already deleted');
+    }
+    
+    const transaction = await Conversation.sequelize.transaction();
+    
+    try {
+      const deletedAt = new Date();
+      
+      // SOFT DELETE: Set flags, keep data
+      await Conversation.update(
+        { 
+          deleted: true, 
+          deletedAt,
+          deletedBy: userId 
+        },
+        { 
+          where: { id: conversationId },
+          transaction 
+        }
+      );
+      
+      // SOFT DELETE: Mark messages as deleted
+      await Message.update(
+        { 
+          deleted: true, 
+          deletedAt 
+        },
+        { 
+          where: { conversationId },
+          transaction 
+        }
+      );
+      
+      await transaction.commit();
+      
+      // Clear from Redis cache
+      await redisService.deleteConversation(conversationId);
+      await redisService.deleteConversationMessages(conversationId);
+      
+      // Clear unread counts
+      if (conversation.participantIds && conversation.participantIds.length > 0) {
+        for (const participantId of conversation.participantIds) {
+          await redisService.resetUnreadCount(participantId, conversationId);
+        }
+      }
+      
+      logger.info('SOFT deleted conversation', {
+        conversationId,
+        deletedBy: userId,
+        method: 'soft_delete'
+      });
+      
+      return {
+        success: true,
+        conversationId,
+        deletedAt: deletedAt.toISOString(),
+        method: 'soft_delete'
+      };
+      
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+    
+  } catch (error) {
+    logger.error('Error soft deleting conversation', {
+      conversationId,
+      userId,
+      error: error.message,
+      stack: error.stack
+    });
+    throw error;
+  }
+}
+
+/**
+ * Hard delete - permanently removes from database
+ */
+async hardDeleteConversation(conversationId, userId) {
+  try {
+    await this.ensureDbInitialized();
+    
+    const models = db.getModels();
+    const { Conversation, ConversationParticipant, Message } = models;
+    
+    if (!Conversation || !ConversationParticipant || !Message) {
+      throw new Error('Required models not available');
+    }
+    
+    // Verify user is a participant
+    const participation = await ConversationParticipant.findOne({
+      where: { conversationId, userId }
+    });
+    
+    if (!participation) {
+      throw new Error('Not authorized to delete this conversation');
+    }
+    
+    const conversation = await Conversation.findByPk(conversationId);
+    
+    if (!conversation) {
+      throw new Error('Conversation not found');
+    }
+    
+    const transaction = await Conversation.sequelize.transaction();
+    
+    try {
+      // Count messages before deletion
+      const messageCount = await Message.count({
+        where: { conversationId },
+        transaction
+      });
+      
+      // HARD DELETE: Permanently remove messages
+      await Message.destroy({
+        where: { conversationId },
+        force: true, // Bypass soft delete if enabled
+        transaction
+      });
+      
+      // HARD DELETE: Remove participants
+      await ConversationParticipant.destroy({
+        where: { conversationId },
+        force: true,
+        transaction
+      });
+      
+      // HARD DELETE: Remove conversation
+      await Conversation.destroy({
+        where: { id: conversationId },
+        force: true,
+        transaction
+      });
+      
+      await transaction.commit();
+      
+      // Clear from Redis cache
+      await redisService.deleteConversation(conversationId);
+      await redisService.deleteConversationMessages(conversationId);
+      
+      // Clear unread counts
+      if (conversation.participantIds && conversation.participantIds.length > 0) {
+        for (const participantId of conversation.participantIds) {
+          await redisService.resetUnreadCount(participantId, conversationId);
+        }
+      }
+      
+      logger.warn('HARD deleted conversation (PERMANENT)', {
+        conversationId,
+        deletedBy: userId,
+        messagesDeleted: messageCount,
+        participantCount: conversation.participantIds?.length || 0,
+        method: 'hard_delete'
+      });
+      
+      return {
+        success: true,
+        conversationId,
+        messagesDeleted: messageCount,
+        participantCount: conversation.participantIds?.length || 0,
+        method: 'hard_delete',
+        permanent: true
+      };
+      
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+    
+  } catch (error) {
+    logger.error('Error hard deleting conversation', {
+      conversationId,
+      userId,
+      error: error.message,
+      stack: error.stack
+    });
+    throw error;
+  }
+}
+
 async findOrCreateConversation(userId1, userId2, jobId = null, jobTitle = null) {
   try {
     await this.ensureDbInitialized();
@@ -783,50 +998,7 @@ async findOrCreateConversation(userId1, userId2, jobId = null, jobTitle = null) 
   }
 }
 
-  /**
-   * Check if a direct conversation exists between two users
-   */
-  /*
-  async findDirectConversation(userId1, userId2) {
-    try {
-      await this.ensureDbInitialized();
-      
-      const models = db.getModels();
-      const { Conversation } = models;
-      
-      if (!Conversation) {
-        logger.error('Conversation model not found');
-        return null;
-      }
-      
-      // Find conversations containing both users
-      const conversations = await Conversation.findAll({
-        where: {
-          participantIds: {
-            [Op.contains]: [userId1, userId2]
-          }
-        }
-      });
-      
-      // Filter for direct conversations (only 2 participants)
-      const directConversation = conversations.find(c => 
-        c.participantIds.length === 2 &&
-        c.participantIds.includes(userId1) &&
-        c.participantIds.includes(userId2)
-      );
-      
-      return directConversation || null;
-    } catch (error) {
-      logger.error('Error finding direct conversation', {
-        userId1,
-        userId2,
-        error: error.message,
-        stack: error.stack
-      });
-      return null;
-    }
-  }
-*/
+
   /**
    * Get conversation messages
    */

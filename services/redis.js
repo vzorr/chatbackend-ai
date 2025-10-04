@@ -533,6 +533,85 @@ const getOnlineUsers = async () => {
   }
 };
 
+// services/redis.js
+
+/**
+ * Delete conversation from Redis cache
+ */
+const deleteConversation = async (conversationId) => {
+  try {
+    const pipeline = redisClient.pipeline();
+    
+    // Delete conversation data
+    const conversationKey = KEY_PREFIXES.CONVERSATION + conversationId;
+    pipeline.del(conversationKey);
+    
+    // Delete participants set
+    const participantsKey = KEY_PREFIXES.CONVERSATION_PARTICIPANTS + conversationId;
+    pipeline.del(participantsKey);
+    
+    // Delete conversation messages list
+    const messagesKey = KEY_PREFIXES.CONVERSATION_MESSAGES + conversationId;
+    pipeline.del(messagesKey);
+    
+    // Delete typing status
+    const typingKey = KEY_PREFIXES.TYPING_STATUS + conversationId;
+    pipeline.del(typingKey);
+    
+    // Execute all deletions
+    await pipeline.exec();
+    
+    logger.info(`Deleted conversation ${conversationId} from Redis cache`);
+    return true;
+    
+  } catch (error) {
+    logger.error('Error deleting conversation from Redis', {
+      conversationId,
+      error: error.message,
+      stack: error.stack
+    });
+    return false;
+  }
+};
+
+/**
+ * Delete specific messages from Redis cache
+ */
+const deleteConversationMessages = async (conversationId) => {
+  try {
+    const messagesKey = KEY_PREFIXES.CONVERSATION_MESSAGES + conversationId;
+    
+    // Get all message IDs in the conversation
+    const messageIds = await redisClient.zrange(messagesKey, 0, -1);
+    
+    if (messageIds.length > 0) {
+      const pipeline = redisClient.pipeline();
+      
+      // Delete each individual message
+      messageIds.forEach(messageId => {
+        pipeline.del(KEY_PREFIXES.MESSAGE + messageId);
+      });
+      
+      // Delete the conversation messages list
+      pipeline.del(messagesKey);
+      
+      await pipeline.exec();
+      
+      logger.info(`Deleted ${messageIds.length} messages for conversation ${conversationId} from Redis`);
+    }
+    
+    return true;
+    
+  } catch (error) {
+    logger.error('Error deleting conversation messages from Redis', {
+      conversationId,
+      error: error.message
+    });
+    return false;
+  }
+};
+
+// Export the new methods
 module.exports = {
   redisClient,
   setUserOnline,
@@ -542,6 +621,8 @@ module.exports = {
   cacheConversation,
   getConversation,
   getUserConversations,
+  deleteConversation,              // ✅ Add this
+  deleteConversationMessages,      // ✅ Add this
   cacheMessage,
   getMessage,
   getConversationMessages,
@@ -558,3 +639,4 @@ module.exports = {
   isUserStillOnline,
   getOnlineUsers,
 };
+
