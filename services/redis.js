@@ -14,17 +14,15 @@ const createRedisClient = () => {
     retryStrategy: (times) => {
       if (times > 10) {
         logger.error('Redis retry attempts exhausted. Connection failed.');
-        return null; // Don't retry anymore
+        return null;
       }
-      const delay = Math.min(times * 100, 3000); // Gradually increase delay up to 3s
+      const delay = Math.min(times * 100, 3000);
       logger.warn(`Redis connection attempt ${times} failed. Retrying in ${delay}ms...`);
       return delay;
     },
-    // Reconnect on error
     reconnectOnError: (err) => {
       const targetError = 'READONLY';
       if (err.message.includes(targetError)) {
-        // Reconnect when Redis is in read-only mode (for failover scenarios)
         return true;
       }
       return false;
@@ -33,7 +31,6 @@ const createRedisClient = () => {
 
   const client = new Redis(redisOptions);
   
-  // Event handlers for connection management
   client.on('connect', () => {
     logger.info('Redis client connected');
   });
@@ -79,62 +76,160 @@ const TTL = {
   TYPING_STATUS: 30 // 30 seconds
 };
 
-// User presence functions
-const setUserOnline = async (userId, socketId) => {
-  const key = KEY_PREFIXES.USER_PRESENCE + userId;
-  const data = JSON.stringify({
-    isOnline: true,
-    socketId,
-    lastSeen: null,
-    updatedAt: Date.now()
-  });
-  
-  await redisClient.set(key, data);
-  await redisClient.expire(key, TTL.USER_PRESENCE);
-  return true;
-};
+// ============================================================================
+// UPDATED PRESENCE FUNCTIONS - Multi-Device Support
+// ============================================================================
 
-const setUserOffline = async (userId) => {
-  const key = KEY_PREFIXES.USER_PRESENCE + userId;
-  
-  // Get current data first
-  const current = await redisClient.get(key);
-  let data;
-  
-  if (current) {
-    // Update existing data
-    const parsed = JSON.parse(current);
-    data = JSON.stringify({
-      ...parsed,
-      isOnline: false,
-      socketId: null,
-      lastSeen: new Date().toISOString(),
+/**
+ * Add socket to user's presence (supports multiple devices)
+ * @param {string} userId - User ID
+ * @param {string} socketId - Socket ID to add
+ * @param {object} userDetails - User details (name, avatar, email, role)
+ * @returns {object} Updated presence data
+ */
+const addUserSocket = async (userId, socketId, userDetails = {}) => {
+  try {
+    const key = KEY_PREFIXES.USER_PRESENCE + userId;
+    
+    // Get current presence
+    let presence = null;
+    const current = await redisClient.get(key);
+    if (current) {
+      try {
+        presence = JSON.parse(current);
+      } catch (parseError) {
+        logger.warn('Could not parse existing presence data', { userId });
+      }
+    }
+    
+    // Add socket to list (avoid duplicates)
+    const socketIds = presence?.socketIds || [];
+    if (!socketIds.includes(socketId)) {
+      socketIds.push(socketId);
+    }
+    
+    // Update presence with user details
+    const data = {
+      userId,
+      name: userDetails.name || presence?.name || 'Unknown User',
+      avatar: userDetails.avatar || presence?.avatar || null,
+      email: userDetails.email || presence?.email || null,
+      role: userDetails.role || presence?.role || 'user',
+      isOnline: true,
+      socketIds,
+      lastSeen: null,
       updatedAt: Date.now()
+    };
+    
+    await redisClient.set(key, JSON.stringify(data));
+    await redisClient.expire(key, TTL.USER_PRESENCE);
+    
+    logger.debug('Added socket to user presence', { 
+      userId, 
+      socketId, 
+      totalSockets: socketIds.length 
     });
-  } else {
-    // Create new entry
-    data = JSON.stringify({
-      isOnline: false,
-      socketId: null,
-      lastSeen: new Date().toISOString(),
-      updatedAt: Date.now()
+    
+    return data;
+    
+  } catch (error) {
+    logger.error('Error adding user socket', { 
+      userId, 
+      socketId, 
+      error: error.message 
     });
+    throw error;
   }
-  
-  await redisClient.set(key, data);
-  await redisClient.expire(key, TTL.USER_PRESENCE);
-  return true;
 };
 
+/**
+ * Remove socket from user's presence
+ * @param {string} userId - User ID
+ * @param {string} socketId - Socket ID to remove
+ * @returns {object} { stillOnline: boolean, lastSeen?: string }
+ */
+const removeUserSocket = async (userId, socketId) => {
+  try {
+    const key = KEY_PREFIXES.USER_PRESENCE + userId;
+    
+    // Get current presence
+    const current = await redisClient.get(key);
+    if (!current) {
+      return { stillOnline: false };
+    }
+    
+    let presence;
+    try {
+      presence = JSON.parse(current);
+    } catch (parseError) {
+      logger.error('Could not parse presence data', { userId });
+      return { stillOnline: false };
+    }
+    
+    // Remove socket from list
+    const socketIds = (presence.socketIds || []).filter(id => id !== socketId);
+    
+    // Still has other sockets?
+    if (socketIds.length > 0) {
+      presence.socketIds = socketIds;
+      presence.updatedAt = Date.now();
+      
+      await redisClient.set(key, JSON.stringify(presence));
+      await redisClient.expire(key, TTL.USER_PRESENCE);
+      
+      logger.debug('Removed socket, user still online', { 
+        userId, 
+        socketId, 
+        remainingSockets: socketIds.length 
+      });
+      
+      return { stillOnline: true };
+    }
+    
+    // No more sockets - user fully offline
+    const lastSeen = new Date().toISOString();
+    presence.isOnline = false;
+    presence.socketIds = [];
+    presence.lastSeen = lastSeen;
+    presence.updatedAt = Date.now();
+    
+    await redisClient.set(key, JSON.stringify(presence));
+    await redisClient.expire(key, TTL.USER_PRESENCE);
+    
+    logger.debug('User fully offline', { userId, socketId, lastSeen });
+    
+    return { stillOnline: false, lastSeen };
+    
+  } catch (error) {
+    logger.error('Error removing user socket', { 
+      userId, 
+      socketId, 
+      error: error.message 
+    });
+    return { stillOnline: false };
+  }
+};
+
+/**
+ * Get presence for a single user
+ */
 const getUserPresence = async (userId) => {
   const key = KEY_PREFIXES.USER_PRESENCE + userId;
   const data = await redisClient.get(key);
   
   if (!data) return null;
   
-  return JSON.parse(data);
+  try {
+    return JSON.parse(data);
+  } catch (error) {
+    logger.error('Error parsing user presence', { userId, error: error.message });
+    return null;
+  }
 };
 
+/**
+ * Get presence for multiple users (optimized with pipeline)
+ */
 const getUsersPresence = async (userIds) => {
   if (!userIds || !userIds.length) return {};
   
@@ -154,20 +249,171 @@ const getUsersPresence = async (userIds) => {
     } else if (!data) {
       presenceMap[userIds[index]] = null;
     } else {
-      presenceMap[userIds[index]] = JSON.parse(data);
+      try {
+        presenceMap[userIds[index]] = JSON.parse(data);
+      } catch (parseError) {
+        logger.error('Error parsing presence data', { userId: userIds[index] });
+        presenceMap[userIds[index]] = null;
+      }
     }
   });
   
   return presenceMap;
 };
 
-// Conversation functions
+/**
+ * Check if user is still online
+ */
+const isUserStillOnline = async (userId) => {
+  const presence = await getUserPresence(userId);
+  return presence && presence.isOnline === true && presence.socketIds?.length > 0;
+};
+
+/**
+ * Get all online users with full details
+ */
+const getOnlineUsers = async () => {
+  try {
+    // Get all user presence keys
+    const keys = await redisClient.keys(KEY_PREFIXES.USER_PRESENCE + '*');
+    
+    if (!keys.length) {
+      logger.info('[Redis] No online users found (no presence keys)');
+      return [];
+    }
+    
+    // Get all presence data
+    const pipeline = redisClient.pipeline();
+    keys.forEach(key => {
+      pipeline.get(key);
+    });
+    
+    const results = await pipeline.exec();
+    const onlineUserIds = [];
+    const presenceData = {};
+    
+    results.forEach((result, index) => {
+      const [err, data] = result;
+      if (!err && data) {
+        try {
+          const presence = JSON.parse(data);
+          if (presence.isOnline && presence.socketIds?.length > 0) {
+            const userId = keys[index].replace(KEY_PREFIXES.USER_PRESENCE, '');
+            onlineUserIds.push(userId);
+            presenceData[userId] = presence;
+          }
+        } catch (parseError) {
+          logger.error('[Redis] Error parsing presence data', { error: parseError.message });
+        }
+      }
+    });
+    
+    if (onlineUserIds.length === 0) {
+      logger.info('[Redis] No users currently online');
+      return [];
+    }
+    
+    logger.info(`[Redis] Found ${onlineUserIds.length} online users`, {
+      userIds: onlineUserIds
+    });
+    
+    // Fetch user details from database
+    try {
+      // Ensure DB is initialized
+      if (!db.isInitialized()) {
+        logger.warn('[Redis] Database not initialized yet, waiting...');
+        await db.waitForInitialization();
+      }
+
+      const models = db.getModels();
+      const User = models.User;
+      
+      if (!User) {
+        logger.error('[Redis] User model not available');
+        // Return data from Redis cache
+        return onlineUserIds.map(userId => ({
+          id: userId,
+          name: presenceData[userId]?.name || 'Unknown User',
+          avatar: presenceData[userId]?.avatar,
+          email: presenceData[userId]?.email,
+          role: presenceData[userId]?.role,
+          isOnline: true,
+          socketIds: presenceData[userId]?.socketIds || [],
+          lastSeen: null
+        }));
+      }
+      
+      const users = await User.findAll({
+        where: { id: onlineUserIds },
+        attributes: ['id', 'name', 'firstName', 'lastName', 'email', 'avatar', 'role']
+      });
+      
+      logger.info(`[Redis] Fetched ${users.length} user records from database`);
+      
+      const onlineUsers = users.map(user => {
+        const displayName = user.fullName || 
+                          user.name || 
+                          (user.firstName && user.lastName ? `${user.firstName} ${user.lastName}` : null) ||
+                          user.firstName || 
+                          user.lastName || 
+                          'Unknown User';
+        
+        return {
+          id: user.id,
+          name: displayName,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          avatar: user.avatar,
+          role: user.role,
+          isOnline: true,
+          socketIds: presenceData[user.id]?.socketIds || [],
+          lastSeen: null,
+          updatedAt: presenceData[user.id]?.updatedAt
+        };
+      });
+      
+      logger.info(`[Redis] Returning ${onlineUsers.length} online users with full details`);
+      
+      return onlineUsers;
+      
+    } catch (dbError) {
+      logger.error('[Redis] Database error while fetching user details', { 
+        error: dbError.message,
+        stack: dbError.stack 
+      });
+      
+      // Fallback: return data from Redis cache
+      return onlineUserIds.map(userId => ({
+        id: userId,
+        name: presenceData[userId]?.name || 'Unknown User',
+        avatar: presenceData[userId]?.avatar,
+        email: presenceData[userId]?.email,
+        role: presenceData[userId]?.role,
+        isOnline: true,
+        socketIds: presenceData[userId]?.socketIds || [],
+        lastSeen: null
+      }));
+    }
+    
+  } catch (error) {
+    logger.error('[Redis] Error getting online users', { 
+      error: error.message,
+      stack: error.stack 
+    });
+    return [];
+  }
+};
+
+// ============================================================================
+// CONVERSATION FUNCTIONS
+// ============================================================================
+
 const cacheConversation = async (conversation) => {
   const key = KEY_PREFIXES.CONVERSATION + conversation.id;
   await redisClient.set(key, JSON.stringify(conversation));
   await redisClient.expire(key, TTL.CONVERSATION);
   
-  // Also store the participants for quick lookup
   if (conversation.participantIds && conversation.participantIds.length) {
     const participantsKey = KEY_PREFIXES.CONVERSATION_PARTICIPANTS + conversation.id;
     await redisClient.del(participantsKey);
@@ -185,7 +431,6 @@ const getConversation = async (conversationId) => {
 };
 
 const getUserConversations = async (userId) => {
-  // Find all conversations where the user is a participant
   const pattern = `${KEY_PREFIXES.CONVERSATION_PARTICIPANTS}*`;
   const keys = await redisClient.keys(pattern);
   
@@ -203,7 +448,6 @@ const getUserConversations = async (userId) => {
   results.forEach((result, index) => {
     const [err, isMember] = result;
     if (!err && isMember === 1) {
-      // Extract the conversation ID from the key
       const conversationId = keys[index].replace(KEY_PREFIXES.CONVERSATION_PARTICIPANTS, '');
       conversationIds.push(conversationId);
     }
@@ -229,14 +473,77 @@ const getUserConversations = async (userId) => {
   return conversations;
 };
 
-// Message functions
+const deleteConversation = async (conversationId) => {
+  try {
+    const pipeline = redisClient.pipeline();
+    
+    const conversationKey = KEY_PREFIXES.CONVERSATION + conversationId;
+    pipeline.del(conversationKey);
+    
+    const participantsKey = KEY_PREFIXES.CONVERSATION_PARTICIPANTS + conversationId;
+    pipeline.del(participantsKey);
+    
+    const messagesKey = KEY_PREFIXES.CONVERSATION_MESSAGES + conversationId;
+    pipeline.del(messagesKey);
+    
+    const typingKey = KEY_PREFIXES.TYPING_STATUS + conversationId;
+    pipeline.del(typingKey);
+    
+    await pipeline.exec();
+    
+    logger.info(`Deleted conversation ${conversationId} from Redis cache`);
+    return true;
+    
+  } catch (error) {
+    logger.error('Error deleting conversation from Redis', {
+      conversationId,
+      error: error.message,
+      stack: error.stack
+    });
+    return false;
+  }
+};
+
+const deleteConversationMessages = async (conversationId) => {
+  try {
+    const messagesKey = KEY_PREFIXES.CONVERSATION_MESSAGES + conversationId;
+    
+    const messageIds = await redisClient.zrange(messagesKey, 0, -1);
+    
+    if (messageIds.length > 0) {
+      const pipeline = redisClient.pipeline();
+      
+      messageIds.forEach(messageId => {
+        pipeline.del(KEY_PREFIXES.MESSAGE + messageId);
+      });
+      
+      pipeline.del(messagesKey);
+      
+      await pipeline.exec();
+      
+      logger.info(`Deleted ${messageIds.length} messages for conversation ${conversationId} from Redis`);
+    }
+    
+    return true;
+    
+  } catch (error) {
+    logger.error('Error deleting conversation messages from Redis', {
+      conversationId,
+      error: error.message
+    });
+    return false;
+  }
+};
+
+// ============================================================================
+// MESSAGE FUNCTIONS
+// ============================================================================
+
 const cacheMessage = async (message) => {
-  // Cache individual message
   const messageKey = KEY_PREFIXES.MESSAGE + message.id;
   await redisClient.set(messageKey, JSON.stringify(message));
   await redisClient.expire(messageKey, TTL.MESSAGES);
   
-  // If it belongs to a conversation, add to the conversation's message list
   if (message.conversationId) {
     const listKey = KEY_PREFIXES.CONVERSATION_MESSAGES + message.conversationId;
     await redisClient.zadd(listKey, message.createdAt.getTime() || Date.now(), message.id);
@@ -255,7 +562,6 @@ const getMessage = async (messageId) => {
 const getConversationMessages = async (conversationId, limit = 50, offset = 0) => {
   const listKey = KEY_PREFIXES.CONVERSATION_MESSAGES + conversationId;
   
-  // Get message IDs ordered by timestamp (most recent first)
   const messageIds = await redisClient.zrevrange(listKey, offset, offset + limit - 1);
   
   if (!messageIds.length) return [];
@@ -278,21 +584,10 @@ const getConversationMessages = async (conversationId, limit = 50, offset = 0) =
   return messages;
 };
 
-// Fixed - removed "this." references
-const isUserStillOnline = async (userId) => {
-  const presence = await getUserPresence(userId);
-  return presence && presence.isOnline;
-};
+// ============================================================================
+// TYPING INDICATOR FUNCTIONS
+// ============================================================================
 
-const updateUserPresence = async (userId, isOnline, socketId = null) => {
-  if (isOnline) {
-    return await setUserOnline(userId, socketId);
-  } else {
-    return await setUserOffline(userId);
-  }
-};
-
-// Typing indicator functions - UPDATED
 const setUserTyping = async (userId, conversationId, ttlMs = 3000) => {
   try {
     const key = KEY_PREFIXES.TYPING_STATUS + conversationId;
@@ -339,7 +634,6 @@ const getUsersTyping = async (conversationId) => {
     const expiredUsers = [];
     const now = Date.now();
     
-    // Check for expired typing sessions (older than 5 seconds)
     Object.entries(data).forEach(([userId, timestamp]) => {
       const age = now - parseInt(timestamp);
       if (age < 5000) {
@@ -349,7 +643,6 @@ const getUsersTyping = async (conversationId) => {
       }
     });
     
-    // Clean up expired users
     if (expiredUsers.length > 0) {
       await redisClient.hdel(key, ...expiredUsers);
     }
@@ -365,7 +658,10 @@ const getUsersTyping = async (conversationId) => {
   }
 };
 
-// Unread messages count
+// ============================================================================
+// UNREAD COUNT FUNCTIONS
+// ============================================================================
+
 const incrementUnreadCount = async (userId, conversationId) => {
   const key = KEY_PREFIXES.UNREAD_COUNT + userId;
   await redisClient.hincrby(key, conversationId, 1);
@@ -384,7 +680,6 @@ const getUnreadCounts = async (userId) => {
   
   if (!data) return {};
   
-  // Convert string counts to numbers
   const counts = {};
   Object.entries(data).forEach(([conversationId, count]) => {
     counts[conversationId] = parseInt(count);
@@ -393,7 +688,10 @@ const getUnreadCounts = async (userId) => {
   return counts;
 };
 
-// Health check function
+// ============================================================================
+// HEALTH CHECK
+// ============================================================================
+
 const ping = async () => {
   try {
     return await redisClient.ping();
@@ -403,240 +701,47 @@ const ping = async () => {
   }
 };
 
-const getOnlineUsers = async () => {
-  try {
-    // Get all user presence keys
-    const keys = await redisClient.keys(KEY_PREFIXES.USER_PRESENCE + '*');
-    
-    if (!keys.length) {
-      logger.info('[Redis] No online users found (no presence keys)');
-      return [];
-    }
-    
-    // Get all presence data
-    const pipeline = redisClient.pipeline();
-    keys.forEach(key => {
-      pipeline.get(key);
-    });
-    
-    const results = await pipeline.exec();
-    const onlineUserIds = [];
-    const presenceData = {};
-    
-    results.forEach((result, index) => {
-      const [err, data] = result;
-      if (!err && data) {
-        try {
-          const presence = JSON.parse(data);
-          if (presence.isOnline) {
-            const userId = keys[index].replace(KEY_PREFIXES.USER_PRESENCE, '');
-            onlineUserIds.push(userId);
-            presenceData[userId] = presence;
-          }
-        } catch (parseError) {
-          logger.error('[Redis] Error parsing presence data', { error: parseError.message });
-        }
-      }
-    });
-    
-    if (onlineUserIds.length === 0) {
-      logger.info('[Redis] No users currently online');
-      return [];
-    }
-    
-    logger.info(`[Redis] Found ${onlineUserIds.length} online user IDs, fetching user details...`, {
-      userIds: onlineUserIds
-    });
-    
-    // Fetch user details from database
-    try {
-      // Ensure DB is initialized
-      if (!db.isInitialized()) {
-        logger.warn('[Redis] Database not initialized yet, waiting...');
-        await db.waitForInitialization();
-      }
+// ============================================================================
+// EXPORTS
+// ============================================================================
 
-      const models = db.getModels();
-      const User = models.User;
-      
-      if (!User) {
-        logger.error('[Redis] User model not available');
-        // Return basic data without names
-        return onlineUserIds.map(userId => ({
-          id: userId,
-          name: 'Unknown User',
-          isOnline: true,
-          socketId: presenceData[userId]?.socketId,
-          lastSeen: null
-        }));
-      }
-      
-      const users = await User.findAll({
-        where: { id: onlineUserIds },
-        attributes: ['id', 'name', 'firstName', 'lastName', 'email', 'avatar', 'role']
-      });
-      
-      logger.info(`[Redis] Fetched ${users.length} user records from database`);
-      
-      const onlineUsers = users.map(user => {
-        // Use fullName getter or construct name from firstName/lastName
-        const displayName = user.fullName || 
-                          user.name || 
-                          (user.firstName && user.lastName ? `${user.firstName} ${user.lastName}` : null) ||
-                          user.firstName || 
-                          user.lastName || 
-                          'Unknown User';
-        
-        return {
-          id: user.id,
-          name: displayName,
-          firstName: user.firstName,
-          lastName: user.lastName,
-          email: user.email,
-          avatar: user.avatar,
-          role: user.role,
-          isOnline: true,
-          socketId: presenceData[user.id]?.socketId,
-          lastSeen: null,
-          updatedAt: presenceData[user.id]?.updatedAt
-        };
-      });
-      
-      logger.info(`[Redis] Returning ${onlineUsers.length} online users with full details`, {
-        users: onlineUsers.map(u => ({ id: u.id, name: u.name }))
-      });
-      
-      return onlineUsers;
-      
-    } catch (dbError) {
-      logger.error('[Redis] Database error while fetching user details', { 
-        error: dbError.message,
-        stack: dbError.stack 
-      });
-      
-      // Fallback: return basic data
-      return onlineUserIds.map(userId => ({
-        id: userId,
-        name: 'Unknown User',
-        isOnline: true,
-        socketId: presenceData[userId]?.socketId,
-        lastSeen: null
-      }));
-    }
-    
-  } catch (error) {
-    logger.error('[Redis] Error getting online users', { 
-      error: error.message,
-      stack: error.stack 
-    });
-    return [];
-  }
-};
-
-// services/redis.js
-
-/**
- * Delete conversation from Redis cache
- */
-const deleteConversation = async (conversationId) => {
-  try {
-    const pipeline = redisClient.pipeline();
-    
-    // Delete conversation data
-    const conversationKey = KEY_PREFIXES.CONVERSATION + conversationId;
-    pipeline.del(conversationKey);
-    
-    // Delete participants set
-    const participantsKey = KEY_PREFIXES.CONVERSATION_PARTICIPANTS + conversationId;
-    pipeline.del(participantsKey);
-    
-    // Delete conversation messages list
-    const messagesKey = KEY_PREFIXES.CONVERSATION_MESSAGES + conversationId;
-    pipeline.del(messagesKey);
-    
-    // Delete typing status
-    const typingKey = KEY_PREFIXES.TYPING_STATUS + conversationId;
-    pipeline.del(typingKey);
-    
-    // Execute all deletions
-    await pipeline.exec();
-    
-    logger.info(`Deleted conversation ${conversationId} from Redis cache`);
-    return true;
-    
-  } catch (error) {
-    logger.error('Error deleting conversation from Redis', {
-      conversationId,
-      error: error.message,
-      stack: error.stack
-    });
-    return false;
-  }
-};
-
-/**
- * Delete specific messages from Redis cache
- */
-const deleteConversationMessages = async (conversationId) => {
-  try {
-    const messagesKey = KEY_PREFIXES.CONVERSATION_MESSAGES + conversationId;
-    
-    // Get all message IDs in the conversation
-    const messageIds = await redisClient.zrange(messagesKey, 0, -1);
-    
-    if (messageIds.length > 0) {
-      const pipeline = redisClient.pipeline();
-      
-      // Delete each individual message
-      messageIds.forEach(messageId => {
-        pipeline.del(KEY_PREFIXES.MESSAGE + messageId);
-      });
-      
-      // Delete the conversation messages list
-      pipeline.del(messagesKey);
-      
-      await pipeline.exec();
-      
-      logger.info(`Deleted ${messageIds.length} messages for conversation ${conversationId} from Redis`);
-    }
-    
-    return true;
-    
-  } catch (error) {
-    logger.error('Error deleting conversation messages from Redis', {
-      conversationId,
-      error: error.message
-    });
-    return false;
-  }
-};
-
-// Export the new methods
 module.exports = {
   redisClient,
-  setUserOnline,
-  setUserOffline,
+  
+  // Presence functions (UPDATED - multi-device support)
+  addUserSocket,           // NEW - replaces setUserOnline
+  removeUserSocket,        // NEW - replaces setUserOffline
   getUserPresence,
   getUsersPresence,
+  isUserStillOnline,
+  getOnlineUsers,
+  
+  // Conversation functions
   cacheConversation,
   getConversation,
   getUserConversations,
-  deleteConversation,              // ✅ Add this
-  deleteConversationMessages,      // ✅ Add this
+  deleteConversation,
+  deleteConversationMessages,
+  
+  // Message functions
   cacheMessage,
   getMessage,
   getConversationMessages,
+  
+  // Typing functions
   setUserTyping,
   removeUserTyping,
   getUsersTyping,
+  
+  // Unread counts
   incrementUnreadCount,
   resetUnreadCount,
   getUnreadCounts,
+  
+  // Health check
   ping,
+  
+  // Constants
   KEY_PREFIXES,
-  TTL,
-  updateUserPresence,
-  isUserStillOnline,
-  getOnlineUsers,
+  TTL
 };
-

@@ -6,7 +6,7 @@ const socketInitializer = require('../../socket/socketInitializer');
 
 async function initializeSocketIO(server) {
   const startTime = Date.now();
-  logger.info('🔧 [SocketIO] Starting Socket.IO initialization...');
+  logger.info('[SocketIO] Starting Socket.IO initialization...');
 
   try {
     const corsOrigin = getCorsOrigin();
@@ -49,7 +49,7 @@ async function initializeSocketIO(server) {
       }
     });
     
-    logger.info('✅ [SocketIO] Socket.IO instance created', {
+    logger.info('[SocketIO] Socket.IO instance created', {
       corsOrigin: corsOrigin,
       path: config.server.socketPath || '/socket.io',
       transports: config.socketio?.transports || ['websocket', 'polling'],
@@ -60,15 +60,17 @@ async function initializeSocketIO(server) {
       }
     });
 
-    // ===== ENHANCED DEBUGGING =====
+    // Setup debugging and monitoring
     setupEnhancedDebugging(io);
     setupSSLEventListeners(io);
+    setupRateLimiting(io);
+    setupMetrics(io);
     
-    // Use existing socketInitializer
+    // Initialize handlers
     await socketInitializer(io);
     
     const duration = Date.now() - startTime;
-    logger.info('✅ [SocketIO] Socket.IO initialization completed', {
+    logger.info('[SocketIO] Socket.IO initialization completed', {
       duration: `${duration}ms`,
       securityFeatures: {
         cors: !!corsOrigin,
@@ -80,7 +82,7 @@ async function initializeSocketIO(server) {
 
     return io;
   } catch (error) {
-    logger.error('❌ [SocketIO] Socket.IO initialization failed', {
+    logger.error('[SocketIO] Socket.IO initialization failed', {
       error: error.message,
       stack: error.stack
     });
@@ -89,12 +91,15 @@ async function initializeSocketIO(server) {
 }
 
 function setupEnhancedDebugging(io) {
-  logger.info('🔧 [SocketIO DEBUG] Setting up enhanced debugging...');
+  if (process.env.LOG_SOCKET_EVENTS !== 'true') {
+    logger.info('[SocketIO] Enhanced debugging disabled (set LOG_SOCKET_EVENTS=true to enable)');
+    return;
+  }
+
+  logger.info('[SocketIO DEBUG] Setting up enhanced debugging...');
   
-  // Track all connections
   const connectionMap = new Map();
   
-  // Monitor all socket connections
   io.on('connection', (socket) => {
     const connectionId = `${socket.id}-${Date.now()}`;
     connectionMap.set(socket.id, {
@@ -108,7 +113,7 @@ function setupEnhancedDebugging(io) {
       }
     });
     
-    logger.info(`[SOCKET CONNECTION] New socket connected`, {
+    logger.info('[SOCKET CONNECTION] New socket connected', {
       socketId: socket.id,
       userId: socket.user?.id,
       transport: socket.conn.transport.name,
@@ -121,7 +126,7 @@ function setupEnhancedDebugging(io) {
     // Monitor all events on this socket
     const originalEmit = socket.emit;
     socket.emit = function(eventName, ...args) {
-      logger.debug(`[SOCKET EMIT] Server -> Client`, {
+      logger.debug('[SOCKET EMIT] Server -> Client', {
         socketId: socket.id,
         userId: socket.user?.id,
         eventName,
@@ -134,7 +139,7 @@ function setupEnhancedDebugging(io) {
     // Monitor disconnection
     socket.on('disconnect', (reason) => {
       const connInfo = connectionMap.get(socket.id);
-      logger.info(`[SOCKET DISCONNECT] Socket disconnected`, {
+      logger.info('[SOCKET DISCONNECT] Socket disconnected', {
         socketId: socket.id,
         userId: socket.user?.id,
         reason,
@@ -145,7 +150,7 @@ function setupEnhancedDebugging(io) {
 
     // Log socket errors
     socket.on('error', (error) => {
-      logger.error(`[SOCKET ERROR] Socket error occurred`, {
+      logger.error('[SOCKET ERROR] Socket error occurred', {
         socketId: socket.id,
         userId: socket.user?.id,
         error: error.message,
@@ -156,7 +161,7 @@ function setupEnhancedDebugging(io) {
 
   // Log server-level events
   io.engine.on('initial_headers', (headers, req) => {
-    logger.debug(`[ENGINE] Initial headers`, {
+    logger.debug('[ENGINE] Initial headers', {
       url: req.url,
       method: req.method,
       headers: req.headers
@@ -164,7 +169,7 @@ function setupEnhancedDebugging(io) {
   });
 
   io.engine.on('headers', (headers, req) => {
-    logger.debug(`[ENGINE] Headers event`, {
+    logger.debug('[ENGINE] Headers event', {
       url: req.url,
       socketId: req._query?.EIO
     });
@@ -180,55 +185,18 @@ function setupEnhancedDebugging(io) {
       rooms: Array.from(s.rooms)
     }));
 
-    logger.info(`[SOCKET STATUS] Server status report`, {
+    logger.info('[SOCKET STATUS] Server status report', {
       totalSockets: socketsCount,
       sockets: socketsList,
       timestamp: new Date().toISOString()
     });
   }, 60000); // Every minute
 
-  logger.info('✅ [SocketIO DEBUG] Enhanced debugging configured');
-}
-
-function getCorsOrigin() {
-  if (config.cors?.origin) {
-    return config.cors.origin;
-  }
-  
-  const serverOrigin = config.server.corsOrigin;
-  
-  if (serverOrigin === '*' && config.server.nodeEnv !== 'production') {
-    logger.warn('⚠️ [SocketIO] Using wildcard CORS origin in development');
-    return '*';
-  }
-  
-  if (config.server.nodeEnv === 'production' && serverOrigin === '*') {
-    logger.error('❌ [SocketIO] Wildcard CORS origin not allowed in production');
-    throw new Error('Wildcard CORS origin not allowed in production');
-  }
-  
-  const origins = serverOrigin.split(',').map(origin => origin.trim());
-  
-  if (config.server.nodeEnv === 'production') {
-    const httpOrigins = origins.filter(origin => origin.startsWith('http://'));
-    if (httpOrigins.length > 0) {
-      logger.warn('⚠️ [SocketIO] HTTP origins detected in production', {
-        httpOrigins: httpOrigins
-      });
-    }
-  }
-  
-  logger.info('🔧 [SocketIO] CORS origins configured', {
-    origins: origins,
-    count: origins.length,
-    production: config.server.nodeEnv === 'production'
-  });
-  
-  return origins.length === 1 ? origins[0] : origins;
+  logger.info('[SocketIO DEBUG] Enhanced debugging configured');
 }
 
 function setupSSLEventListeners(io) {
-  logger.info('🔧 [SocketIO] Setting up SSL-specific event listeners...');
+  logger.info('[SocketIO] Setting up SSL-specific event listeners...');
   
   const sslStats = {
     totalConnections: 0,
@@ -249,7 +217,7 @@ function setupSSLEventListeners(io) {
     
     socket.on('upgrade', () => {
       sslStats.upgradeSuccesses++;
-      logger.debug('⬆️ [SocketIO] Transport upgraded to WebSocket', {
+      logger.debug('[SocketIO] Transport upgraded to WebSocket', {
         socketId: socket.id,
         secure: isSecure,
         transport: 'websocket'
@@ -258,7 +226,7 @@ function setupSSLEventListeners(io) {
     
     socket.on('upgradeError', (error) => {
       sslStats.upgradeFailures++;
-      logger.warn('⚠️ [SocketIO] Transport upgrade failed', {
+      logger.warn('[SocketIO] Transport upgrade failed', {
         socketId: socket.id,
         error: error.message,
         secure: isSecure
@@ -267,7 +235,7 @@ function setupSSLEventListeners(io) {
   });
   
   io.engine.on('connection_error', (err) => {
-    logger.error('❌ [SocketIO] Enhanced connection error', {
+    logger.error('[SocketIO] Enhanced connection error', {
       error: err.message,
       type: err.type,
       code: err.code,
@@ -289,13 +257,157 @@ function setupSSLEventListeners(io) {
     const securePercentage = sslStats.totalConnections > 0 ? 
       Math.round((sslStats.secureConnections / sslStats.totalConnections) * 100) : 0;
     
-    logger.info('📊 [SocketIO] SSL connection statistics', {
+    logger.info('[SocketIO] SSL connection statistics', {
       ...sslStats,
       securePercentage: `${securePercentage}%`
     });
   }, 5 * 60 * 1000);
   
-  logger.info('✅ [SocketIO] SSL event listeners configured');
+  logger.info('[SocketIO] SSL event listeners configured');
+}
+
+function setupRateLimiting(io) {
+  logger.info('[SocketIO] Setting up rate limiting...');
+  
+  const rateLimitMap = new Map();
+  
+  io.on('connection', (socket) => {
+    // Flood control middleware
+    socket.use((packet, next) => {
+      const now = Date.now();
+      const timestamps = rateLimitMap.get(socket.id) || [];
+      const recent = timestamps.filter(ts => now - ts < 1000);
+      recent.push(now);
+      rateLimitMap.set(socket.id, recent);
+      
+      if (recent.length > 10) {
+        logger.warn('[SocketIO] Socket rate limit exceeded', { 
+          socketId: socket.id,
+          userId: socket.user?.id,
+          eventsInWindow: recent.length
+        });
+        return next(new Error('Rate limit exceeded'));
+      }
+      next();
+    });
+    
+    // Cleanup on disconnect
+    socket.on('disconnect', () => {
+      rateLimitMap.delete(socket.id);
+    });
+  });
+  
+  logger.info('[SocketIO] Rate limiting configured');
+}
+
+function setupMetrics(io) {
+  logger.info('[SocketIO] Setting up metrics tracking...');
+  
+  const metrics = {
+    connections: 0,
+    authenticated: 0,
+    rateLimited: 0,
+    secureConnections: 0,
+    proxyConnections: 0
+  };
+  
+  io.on('connection', (socket) => {
+    metrics.connections++;
+    
+    const isSecure = socket.handshake.secure || 
+                    socket.handshake.headers['x-forwarded-proto'] === 'https';
+    const viaProxy = !!(socket.handshake.headers['x-forwarded-proto'] || 
+                       socket.handshake.headers['x-real-ip'] || 
+                       socket.handshake.headers['x-forwarded-for']);
+    
+    if (isSecure) metrics.secureConnections++;
+    if (viaProxy) metrics.proxyConnections++;
+    if (socket.user) metrics.authenticated++;
+    
+    // Log connection info
+    logger.info('[SocketIO] New connection', {
+      socketId: socket.id,
+      userId: socket.user?.id,
+      transport: socket.conn.transport.name,
+      secure: isSecure,
+      viaProxy: viaProxy,
+      ip: socket.handshake.address
+    });
+    
+    // Track disconnect
+    socket.on('disconnect', () => {
+      metrics.connections--;
+      if (socket.user) metrics.authenticated--;
+      if (isSecure) metrics.secureConnections--;
+      if (viaProxy) metrics.proxyConnections--;
+    });
+  });
+  
+  // Periodic metrics logging
+  setInterval(() => {
+    const totalConnections = io.sockets.sockets.size;
+    const securePercentage = totalConnections > 0 ? 
+      Math.round((metrics.secureConnections / totalConnections) * 100) : 0;
+    const proxyPercentage = totalConnections > 0 ? 
+      Math.round((metrics.proxyConnections / totalConnections) * 100) : 0;
+
+    logger.info('[SocketIO] Metrics report', {
+      connected: totalConnections,
+      metrics: metrics,
+      rooms: io.sockets.adapter.rooms.size,
+      security: {
+        secureConnections: metrics.secureConnections,
+        securePercentage: `${securePercentage}%`,
+        proxyConnections: metrics.proxyConnections,
+        proxyPercentage: `${proxyPercentage}%`
+      },
+      transports: {
+        websocket: Array.from(io.sockets.sockets.values())
+          .filter(s => s.conn.transport.name === 'websocket').length,
+        polling: Array.from(io.sockets.sockets.values())
+          .filter(s => s.conn.transport.name === 'polling').length
+      }
+    });
+  }, 60000); // Every minute
+  
+  logger.info('[SocketIO] Metrics tracking configured');
+}
+
+function getCorsOrigin() {
+  if (config.cors?.origin) {
+    return config.cors.origin;
+  }
+  
+  const serverOrigin = config.server.corsOrigin;
+  
+  if (serverOrigin === '*' && config.server.nodeEnv !== 'production') {
+    logger.warn('[SocketIO] Using wildcard CORS origin in development');
+    return '*';
+  }
+  
+  if (config.server.nodeEnv === 'production' && serverOrigin === '*') {
+    logger.error('[SocketIO] Wildcard CORS origin not allowed in production');
+    throw new Error('Wildcard CORS origin not allowed in production');
+  }
+  
+  const origins = serverOrigin.split(',').map(origin => origin.trim());
+  
+  if (config.server.nodeEnv === 'production') {
+    const httpOrigins = origins.filter(origin => origin.startsWith('http://'));
+    if (httpOrigins.length > 0) {
+      logger.warn('[SocketIO] HTTP origins detected in production', {
+        httpOrigins: httpOrigins
+      });
+    }
+  }
+  
+  logger.info('[SocketIO] CORS origins configured', {
+    origins: origins,
+    count: origins.length,
+    production: config.server.nodeEnv === 'production'
+  });
+  
+  return origins.length === 1 ? origins[0] : origins;
 }
 
 module.exports = { initializeSocketIO };
