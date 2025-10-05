@@ -140,7 +140,7 @@ const getPresignedUrl = async (fileName, fileType, expiresIn = 300) => {
 // Get file URL based on storage type
 const getFileUrl = (req, fileName) => {
   if (useS3) {
-    return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${fileName}`;
+    return `https://${process.env.S3_BUCKET_NAME}.s3.amazonaws.com/${fileName}`;
   } else {
     return `${req.protocol}://${req.get('host')}/uploads/${fileName}`;
   }
