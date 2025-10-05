@@ -79,9 +79,22 @@ class MediaUploadService {
         size: file.size
       });
 
+      // Build public URL
+      const publicUrl = `https://${media.s3Bucket}.s3.${media.s3Region}.amazonaws.com/${media.s3Key}`;
+
       return {
         success: true,
-        media: media.toPublicJSON()
+        media: {
+          id: media.id,
+          fileName: media.fileName,
+          originalName: media.originalName,
+          mimeType: media.mimeType,
+          fileSize: media.fileSize,
+          fileCategory: media.fileCategory,
+          url: publicUrl,
+          uploadStatus: media.uploadStatus,
+          createdAt: media.createdAt
+        }
       };
 
     } catch (error) {
@@ -214,7 +227,8 @@ class MediaUploadService {
       }
 
       // Soft delete
-      await media.softDelete();
+      media.deletedAt = new Date();
+      await media.save();
 
       // Optionally delete from S3 (uncomment if you want hard delete)
       // await s3Service.deleteFile(media.s3Key, media.s3Bucket);
@@ -268,4 +282,5 @@ class MediaUploadService {
   }
 }
 
-module.exports = new MediaUploadService();
+const mediaUploadServiceInstance = new MediaUploadService();
+module.exports = mediaUploadServiceInstance;
