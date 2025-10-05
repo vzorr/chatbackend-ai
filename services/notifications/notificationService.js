@@ -1,4 +1,4 @@
-// services/notifications/notificationService.js - MINIMAL UPDATED VERSION
+// services/notifications/notificationService.js - FIXED VERSION
 const handlebars = require('handlebars');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../../db');
@@ -11,7 +11,6 @@ class NotificationService {
     this.initialized = false;
     this.initPromise = null;
     this.providers = new Map();
-    // ADDED: System UUID for handling "system" triggers
     this.SYSTEM_USER_UUID = '00000000-0000-0000-0000-000000000001';
   }
 
@@ -56,9 +55,6 @@ class NotificationService {
     }
   }
 
-  /**
-   * ADDED: Sanitize triggeredBy to ensure valid UUID
-   */
   sanitizeTriggeredBy(triggeredBy) {
     if (!triggeredBy) {
       return this.SYSTEM_USER_UUID;
@@ -79,9 +75,6 @@ class NotificationService {
     return triggeredBy;
   }
 
-  /**
-   * ENHANCED: Process notification with business context - FAIL-SAFE
-   */
   async processNotification(appId, eventKey, recipientId, data = {}, businessContext = {}) {
     const operationId = uuidv4();
     
@@ -97,13 +90,11 @@ class NotificationService {
     let logEntry = null;
 
     try {
-      // FIXED: Sanitize triggeredBy
       const sanitizedTriggeredBy = this.sanitizeTriggeredBy(businessContext.triggeredBy);
 
       await this.ensureInitialized();
       const models = db.getModels();
 
-      // Get event with category and template using eventKey .
       const event = await models.NotificationEvent.findOne({
         where: { eventKey, isActive: true },
         include: [
@@ -127,7 +118,6 @@ class NotificationService {
 
       const template = event.templates[0];
 
-      // FAIL-SAFE: Compile template with provided data (no extraction needed)
       let compiledTitle, compiledBody, compiledPayload;
       
       try {
@@ -140,13 +130,11 @@ class NotificationService {
           error: templateError.message,
           providedData: Object.keys(data)
         });
-        // Fallback to basic notification
         compiledTitle = template.title || 'Notification';
         compiledBody = template.body || 'You have a new notification';
         compiledPayload = {};
       }
 
-      // ENHANCED: Create log entry with business context
       logEntry = await models.NotificationLog.create({
         id: uuidv4(),
         recipientId,
@@ -159,7 +147,6 @@ class NotificationService {
         appId,
         title: compiledTitle,
         body: compiledBody,
-        // ENHANCED: Store business context and provided data in payload
         payload: {
           ...compiledPayload,
           businessContext: {
@@ -178,7 +165,6 @@ class NotificationService {
         channel: 'push'
       });
 
-      // Get user device tokens
       const deviceTokens = await this.getUserDeviceTokens(recipientId);
 
       if (deviceTokens.length === 0) {
@@ -196,16 +182,15 @@ class NotificationService {
         };
       }
 
-      // Send notifications
       const notification = {
         title: compiledTitle,
         body: compiledBody,
         data: compiledPayload
       };
 
+      // CRITICAL FIX: Handle invalid tokens
       const sendResults = await this.sendToDevices(deviceTokens, notification);
 
-      // Update log status
       const finalStatus = sendResults.success > 0 ? 'delivered' : 'failed';
       await logEntry.update({
         status: finalStatus,
@@ -219,7 +204,8 @@ class NotificationService {
         eventKey,
         recipientId,
         success: sendResults.success,
-        failed: sendResults.failed
+        failed: sendResults.failed,
+        tokensRemoved: sendResults.tokensRemoved || 0
       });
 
       return {
@@ -231,7 +217,6 @@ class NotificationService {
       };
 
     } catch (error) {
-      // Update log entry with error if it exists
       if (logEntry) {
         try {
           await logEntry.update({
@@ -258,9 +243,6 @@ class NotificationService {
     }
   }
 
-  /**
-   * Get notification template by appId and eventKey
-   */
   async getTemplate(appId, eventKey) {
     try {
       const models = db.getModels();
@@ -296,9 +278,6 @@ class NotificationService {
     }
   }
 
-  /**
-   * Get user's active device tokens
-   */
   async getUserDeviceTokens(recipientId) {
     try {
       const models = db.getModels();
@@ -325,12 +304,42 @@ class NotificationService {
   }
 
   /**
-   * Send notification to multiple devices
+   * CRITICAL FIX: Remove invalid tokens from database
+   */
+  async removeInvalidToken(token) {
+    try {
+      const models = db.getModels();
+      if (!models?.DeviceToken) {
+        console.error('DeviceToken model not available for cleanup');
+        return false;
+      }
+
+      const deleted = await models.DeviceToken.destroy({
+        where: { token: token }
+      });
+
+      if (deleted > 0) {
+        console.log(`Removed ${deleted} invalid FCM token(s) from database`);
+      }
+
+      return deleted > 0;
+    } catch (error) {
+      console.error('Failed to remove invalid token:', {
+        error: error.message,
+        token: token.substring(0, 10) + '...'
+      });
+      return false;
+    }
+  }
+
+  /**
+   * CRITICAL FIX: Send to devices with token cleanup
    */
   async sendToDevices(deviceTokens, notification) {
     const results = {
       success: 0,
       failed: 0,
+      tokensRemoved: 0,
       errors: []
     };
 
@@ -349,18 +358,32 @@ class NotificationService {
       try {
         for (const token of fcmTokens) {
           try {
-            await fcmService.sendNotification(
+            const result = await fcmService.sendNotification(
               token,
               notification.title,
               notification.body,
               notification.data
             );
-            results.success++;
+
+            if (result.success) {
+              results.success++;
+            } else {
+              results.failed++;
+              
+              // CRITICAL FIX: Remove invalid tokens
+              if (result.tokenValid === false) {
+                await this.removeInvalidToken(token);
+                results.tokensRemoved++;
+              } else {
+                results.errors.push({
+                  platform: 'android',
+                  error: result.error
+                });
+              }
+            }
           } catch (fcmError) {
-            logger.error('FCM notification failed', {
-              token: token.substring(0, 8) + '...',
-              error: fcmError.message
-            });
+            // Should not happen with new FCM implementation, but just in case
+            console.error('Unexpected FCM error:', fcmError.message);
             results.failed++;
             results.errors.push({
               platform: 'android',
@@ -384,9 +407,6 @@ class NotificationService {
     return results;
   }
 
-  /**
-   * FAIL-SAFE: Compile template with handlebars
-   */
   compileTemplate(template, data) {
     try {
       if (!template) return '';
@@ -397,13 +417,10 @@ class NotificationService {
         error: error.message,
         template
       });
-      return template; // Return original as fallback
+      return template;
     }
   }
 
-  /**
-   * FAIL-SAFE: Compile payload object with handlebars
-   */
   compilePayload(payloadTemplate, data) {
     if (!payloadTemplate) return {};
     
@@ -425,11 +442,9 @@ class NotificationService {
       logger.error('Payload compilation error', {
         error: error.message
       });
-      return payloadTemplate; // Return original as fallback
+      return payloadTemplate;
     }
   }
-
-  // ===== ALL EXISTING METHODS STAY THE SAME =====
 
   async getTemplates(appId) {
     await this.ensureInitialized();
