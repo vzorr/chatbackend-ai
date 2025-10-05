@@ -1,26 +1,12 @@
 const multer = require('multer');
 const path = require('path');
-const fs = require('fs');
-const { v4: uuidv4 } = require('uuid');
+const config = require('../config/config');
+const logger = require('../utils/logger');
 
-// Ensure upload directories exist (including videos)
-const uploadDirs = [
-  'uploads/images', 
-  'uploads/audio', 
-  'uploads/videos',  // ADDED
-  'uploads/documents',
-  'uploads/files'    // ADDED for generic files
-];
+// MEMORY STORAGE - Files stay in memory for direct S3 upload
+const storage = multer.memoryStorage();
 
-uploadDirs.forEach(dir => {
-  const fullPath = path.join(process.cwd(), dir);
-  if (!fs.existsSync(fullPath)) {
-    fs.mkdirSync(fullPath, { recursive: true });
-    console.log(`[UPLOAD] Created directory: ${dir}`);
-  }
-});
-
-// File type validation
+// File filter validation
 const fileFilter = (req, file, cb) => {
   const allowedImageTypes = /jpeg|jpg|png|gif|webp/;
   const allowedAudioTypes = /mp3|wav|ogg|m4a|aac|webm/;
@@ -49,38 +35,89 @@ const fileFilter = (req, file, cb) => {
   }
 };
 
-// Storage configuration
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const mimetype = file.mimetype;
-    let folder = 'uploads/documents';
-    
-    if (mimetype.startsWith('image/')) {
-      folder = 'uploads/images';
-    } else if (mimetype.startsWith('audio/')) {
-      folder = 'uploads/audio';
-    } else if (mimetype.startsWith('video/')) {
-      folder = 'uploads/videos';
-    } else {
-      folder = 'uploads/documents';
-    }
-    
-    const fullPath = path.join(process.cwd(), folder);
-    cb(null, fullPath);
-  },
-  filename: (req, file, cb) => {
-    const uniqueName = `${uuidv4()}${path.extname(file.originalname)}`;
-    cb(null, uniqueName);
-  }
-});
-
-// Multer instance with limits
+// Multer instance with memory storage and limits
 const upload = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize: 50 * 1024 * 1024 // 50MB (increased from 10MB)
+    fileSize: config.fileUpload.maxFileSize || 50 * 1024 * 1024, // 50MB default
+    files: config.fileUpload.maxBatchFiles || 5
   }
 });
 
-module.exports = upload;
+// Multer error handler middleware
+const handleMulterError = (err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    logger.error('[MULTER_ERROR]', {
+      code: err.code,
+      field: err.field,
+      message: err.message,
+      userId: req.user?.id
+    });
+
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      const maxSizeMB = (config.fileUpload.maxFileSize || 50 * 1024 * 1024) / (1024 * 1024);
+      return res.status(413).json({
+        success: false,
+        error: {
+          code: 'FILE_TOO_LARGE',
+          message: `File size exceeds ${maxSizeMB}MB limit`
+        }
+      });
+    }
+    
+    if (err.code === 'LIMIT_FILE_COUNT') {
+      return res.status(413).json({
+        success: false,
+        error: {
+          code: 'TOO_MANY_FILES',
+          message: `Maximum ${config.fileUpload.maxBatchFiles || 5} files allowed in batch upload`
+        }
+      });
+    }
+
+    if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'UNEXPECTED_FILE',
+          message: `Unexpected field: ${err.field}`
+        }
+      });
+    }
+
+    return res.status(400).json({
+      success: false,
+      error: {
+        code: 'UPLOAD_ERROR',
+        message: err.message
+      }
+    });
+  }
+  
+  if (err && err.message && err.message.includes('File type not allowed')) {
+    logger.warn('[FILE_TYPE_ERROR]', {
+      message: err.message,
+      userId: req.user?.id
+    });
+
+    return res.status(400).json({
+      success: false,
+      error: {
+        code: 'INVALID_FILE_TYPE',
+        message: err.message
+      }
+    });
+  }
+  
+  next(err);
+};
+
+// CLEANER EXPORT PATTERN
+module.exports = {
+  single: upload.single.bind(upload),
+  array: upload.array.bind(upload),
+  fields: upload.fields.bind(upload),
+  handleMulterError,
+  upload // Export the instance itself if needed
+};

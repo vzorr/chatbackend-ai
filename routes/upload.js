@@ -1,38 +1,48 @@
 const express = require('express');
 const router = express.Router();
-const multer = require('multer');
-const path = require('path');
 const { authenticate } = require('../middleware/authentication');
 const { asyncHandler, createOperationalError } = require('../middleware/exceptionHandler');
-const upload = require('../middleware/upload');
+const { single, array, handleMulterError } = require('../middleware/upload');
+const fileValidator = require('../middleware/fileValidator');
+const mediaUploadService = require('../services/mediaUpload.service');
 const logger = require('../utils/logger');
 
 // Single image upload
 router.post('/image',
   authenticate,
-  upload.single('image'),
+  single('image'),
+  fileValidator.validateSingleFile('image'),
   asyncHandler(async (req, res) => {
     if (!req.file) {
       throw createOperationalError('No image file provided', 400, 'NO_FILE');
     }
 
-    const fileUrl = `/uploads/images/${req.file.filename}`;
-    
-    logger.info('Image uploaded', {
+    const result = await mediaUploadService.uploadFile(
+      req.user,
+      req.file,
+      {
+        fileCategory: 'image',
+        conversationId: req.body.conversationId,
+        messageId: req.body.messageId
+      }
+    );
+
+    logger.info('Image uploaded to S3', {
       userId: req.user.id,
-      filename: req.file.filename,
-      size: req.file.size,
-      url: fileUrl
+      mediaId: result.media.id,
+      originalName: req.file.originalname,
+      size: req.file.size
     });
 
     res.status(201).json({
       success: true,
       file: {
-        url: fileUrl,
-        filename: req.file.filename,
-        originalName: req.file.originalname,
-        size: req.file.size,
-        mimeType: req.file.mimetype,
+        id: result.media.id,
+        url: result.media.url,
+        fileName: result.media.fileName,
+        originalName: result.media.originalName,
+        size: result.media.fileSize,
+        mimeType: result.media.mimeType,
         type: 'image'
       }
     });
@@ -42,29 +52,39 @@ router.post('/image',
 // Single video upload
 router.post('/video',
   authenticate,
-  upload.single('video'),
+  single('video'),
+  fileValidator.validateSingleFile('video'),
   asyncHandler(async (req, res) => {
     if (!req.file) {
       throw createOperationalError('No video file provided', 400, 'NO_FILE');
     }
 
-    const fileUrl = `/uploads/videos/${req.file.filename}`;
-    
-    logger.info('Video uploaded', {
+    const result = await mediaUploadService.uploadFile(
+      req.user,
+      req.file,
+      {
+        fileCategory: 'video',
+        conversationId: req.body.conversationId,
+        messageId: req.body.messageId
+      }
+    );
+
+    logger.info('Video uploaded to S3', {
       userId: req.user.id,
-      filename: req.file.filename,
-      size: req.file.size,
-      url: fileUrl
+      mediaId: result.media.id,
+      originalName: req.file.originalname,
+      size: req.file.size
     });
 
     res.status(201).json({
       success: true,
       file: {
-        url: fileUrl,
-        filename: req.file.filename,
-        originalName: req.file.originalname,
-        size: req.file.size,
-        mimeType: req.file.mimetype,
+        id: result.media.id,
+        url: result.media.url,
+        fileName: result.media.fileName,
+        originalName: result.media.originalName,
+        size: result.media.fileSize,
+        mimeType: result.media.mimeType,
         type: 'video'
       }
     });
@@ -74,29 +94,39 @@ router.post('/video',
 // Single audio upload
 router.post('/audio',
   authenticate,
-  upload.single('audio'),
+  single('audio'),
+  fileValidator.validateSingleFile('audio'),
   asyncHandler(async (req, res) => {
     if (!req.file) {
       throw createOperationalError('No audio file provided', 400, 'NO_FILE');
     }
 
-    const fileUrl = `/uploads/audio/${req.file.filename}`;
-    
-    logger.info('Audio uploaded', {
+    const result = await mediaUploadService.uploadFile(
+      req.user,
+      req.file,
+      {
+        fileCategory: 'audio',
+        conversationId: req.body.conversationId,
+        messageId: req.body.messageId
+      }
+    );
+
+    logger.info('Audio uploaded to S3', {
       userId: req.user.id,
-      filename: req.file.filename,
-      size: req.file.size,
-      url: fileUrl
+      mediaId: result.media.id,
+      originalName: req.file.originalname,
+      size: req.file.size
     });
 
     res.status(201).json({
       success: true,
       file: {
-        url: fileUrl,
-        filename: req.file.filename,
-        originalName: req.file.originalname,
-        size: req.file.size,
-        mimeType: req.file.mimetype,
+        id: result.media.id,
+        url: result.media.url,
+        fileName: result.media.fileName,
+        originalName: result.media.originalName,
+        size: result.media.fileSize,
+        mimeType: result.media.mimeType,
         type: 'audio'
       }
     });
@@ -106,29 +136,39 @@ router.post('/audio',
 // Single document upload
 router.post('/document',
   authenticate,
-  upload.single('document'),
+  single('document'),
+  fileValidator.validateSingleFile('document'),
   asyncHandler(async (req, res) => {
     if (!req.file) {
       throw createOperationalError('No document file provided', 400, 'NO_FILE');
     }
 
-    const fileUrl = `/uploads/documents/${req.file.filename}`;
-    
-    logger.info('Document uploaded', {
+    const result = await mediaUploadService.uploadFile(
+      req.user,
+      req.file,
+      {
+        fileCategory: 'document',
+        conversationId: req.body.conversationId,
+        messageId: req.body.messageId
+      }
+    );
+
+    logger.info('Document uploaded to S3', {
       userId: req.user.id,
-      filename: req.file.filename,
-      size: req.file.size,
-      url: fileUrl
+      mediaId: result.media.id,
+      originalName: req.file.originalname,
+      size: req.file.size
     });
 
     res.status(201).json({
       success: true,
       file: {
-        url: fileUrl,
-        filename: req.file.filename,
-        originalName: req.file.originalname,
-        size: req.file.size,
-        mimeType: req.file.mimetype,
+        id: result.media.id,
+        url: result.media.url,
+        fileName: result.media.fileName,
+        originalName: result.media.originalName,
+        size: result.media.fileSize,
+        mimeType: result.media.mimeType,
         type: 'document'
       }
     });
@@ -138,30 +178,48 @@ router.post('/document',
 // Generic file upload (fallback)
 router.post('/file',
   authenticate,
-  upload.single('file'),
+  single('file'),
   asyncHandler(async (req, res) => {
     if (!req.file) {
       throw createOperationalError('No file provided', 400, 'NO_FILE');
     }
 
-    const fileUrl = `/uploads/files/${req.file.filename}`;
+    // Auto-detect category
+    const mimeType = req.file.mimetype;
+    let category = 'document';
     
-    logger.info('File uploaded', {
+    if (mimeType.startsWith('image/')) category = 'image';
+    else if (mimeType.startsWith('audio/')) category = 'audio';
+    else if (mimeType.startsWith('video/')) category = 'video';
+
+    const result = await mediaUploadService.uploadFile(
+      req.user,
+      req.file,
+      {
+        fileCategory: category,
+        conversationId: req.body.conversationId,
+        messageId: req.body.messageId
+      }
+    );
+
+    logger.info('File uploaded to S3', {
       userId: req.user.id,
-      filename: req.file.filename,
+      mediaId: result.media.id,
+      originalName: req.file.originalname,
       size: req.file.size,
-      url: fileUrl
+      category
     });
 
     res.status(201).json({
       success: true,
       file: {
-        url: fileUrl,
-        filename: req.file.filename,
-        originalName: req.file.originalname,
-        size: req.file.size,
-        mimeType: req.file.mimetype,
-        type: 'file'
+        id: result.media.id,
+        url: result.media.url,
+        fileName: result.media.fileName,
+        originalName: result.media.originalName,
+        size: result.media.fileSize,
+        mimeType: result.media.mimeType,
+        type: category
       }
     });
   })
@@ -170,29 +228,37 @@ router.post('/file',
 // Batch upload (multiple files)
 router.post('/batch',
   authenticate,
-  upload.array('files', 5),
+  array('files', 5),
+  fileValidator.validateMultipleFiles(),
   asyncHandler(async (req, res) => {
     if (!req.files || req.files.length === 0) {
       throw createOperationalError('No files provided', 400, 'NO_FILES');
     }
 
-    const uploadedFiles = req.files.map(file => {
-      const folder = file.destination.split('/').pop();
-      return {
-        url: `/uploads/${folder}/${file.filename}`,
-        filename: file.filename,
-        originalName: file.originalname,
-        size: file.size,
-        mimeType: file.mimetype,
-        type: folder.slice(0, -1) // Remove 's' from folder name
-      };
-    });
+    const result = await mediaUploadService.uploadMultipleFiles(
+      req.user,
+      req.files,
+      {
+        conversationId: req.body.conversationId,
+        messageId: req.body.messageId
+      }
+    );
 
     logger.info('Batch upload completed', {
       userId: req.user.id,
-      fileCount: uploadedFiles.length,
+      fileCount: result.media.length,
       totalSize: req.files.reduce((sum, f) => sum + f.size, 0)
     });
+
+    const uploadedFiles = result.media.map(media => ({
+      id: media.id,
+      url: media.url,
+      fileName: media.fileName,
+      originalName: media.originalName,
+      size: media.fileSize,
+      mimeType: media.mimeType,
+      type: media.fileCategory
+    }));
 
     res.status(201).json({
       success: true,
@@ -202,40 +268,167 @@ router.post('/batch',
   })
 );
 
-// Error handling for multer
-router.use((error, req, res, next) => {
-  if (error instanceof multer.MulterError) {
-    if (error.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'FILE_TOO_LARGE',
-          message: 'File size exceeds 10MB limit'
-        }
-      });
-    }
-    if (error.code === 'LIMIT_FILE_COUNT') {
-      return res.status(400).json({
-        success: false,
-        error: {
-          code: 'TOO_MANY_FILES',
-          message: 'Maximum 5 files allowed in batch upload'
-        }
-      });
-    }
-  }
-  
-  if (error.message && error.message.includes('File type not allowed')) {
-    return res.status(400).json({
-      success: false,
-      error: {
-        code: 'INVALID_FILE_TYPE',
-        message: error.message
+// Get presigned download URL
+router.get('/download/:mediaId',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const { mediaId } = req.params;
+    const { expirySeconds = 3600 } = req.query;
+
+    const downloadUrl = await mediaUploadService.getDownloadUrl(
+      mediaId,
+      req.user.id,
+      parseInt(expirySeconds)
+    );
+
+    res.json({
+      success: true,
+      downloadUrl,
+      expiresIn: parseInt(expirySeconds)
+    });
+  })
+);
+
+// Get media metadata
+router.get('/media/:mediaId',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const { mediaId } = req.params;
+
+    const media = await mediaUploadService.getMedia(mediaId, req.user.id);
+
+    res.json({
+      success: true,
+      media: {
+        id: media.id,
+        fileName: media.fileName,
+        originalName: media.originalName,
+        mimeType: media.mimeType,
+        fileSize: media.fileSize,
+        fileCategory: media.fileCategory,
+        uploadStatus: media.uploadStatus,
+        createdAt: media.createdAt
       }
     });
-  }
-  
-  next(error);
-});
+  })
+);
+
+// Delete media (soft delete)
+router.delete('/:mediaId',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const { mediaId } = req.params;
+
+    await mediaUploadService.deleteMedia(mediaId, req.user.id);
+
+    logger.info('Media deleted', {
+      userId: req.user.id,
+      mediaId
+    });
+
+    res.json({
+      success: true,
+      message: 'Media deleted successfully'
+    });
+  })
+);
+
+// Get conversation media
+router.get('/conversation/:conversationId',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const { conversationId } = req.params;
+    const { category, limit = 50, offset = 0 } = req.query;
+
+    const db = require('../db/models');
+    const { Media, ConversationParticipant } = db;
+
+    // Verify user is participant
+    const participant = await ConversationParticipant.findOne({
+      where: {
+        conversationId,
+        userId: req.user.id
+      }
+    });
+
+    if (!participant) {
+      throw createOperationalError('Not a participant in this conversation', 403, 'NOT_PARTICIPANT');
+    }
+
+    const where = {
+      conversationId,
+      deletedAt: null
+    };
+
+    if (category) {
+      where.fileCategory = category;
+    }
+
+    const media = await Media.findAll({
+      where,
+      order: [['createdAt', 'DESC']],
+      limit: parseInt(limit),
+      offset: parseInt(offset)
+    });
+
+    res.json({
+      success: true,
+      media: media.map(m => ({
+        id: m.id,
+        fileName: m.fileName,
+        originalName: m.originalName,
+        mimeType: m.mimeType,
+        fileSize: m.fileSize,
+        fileCategory: m.fileCategory,
+        createdAt: m.createdAt
+      })),
+      count: media.length
+    });
+  })
+);
+
+// Get user's uploads
+router.get('/user/me',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const { category, limit = 50, offset = 0 } = req.query;
+
+    const db = require('../db/models');
+    const { Media } = db;
+
+    const where = {
+      userId: req.user.id,
+      deletedAt: null
+    };
+
+    if (category) {
+      where.fileCategory = category;
+    }
+
+    const media = await Media.findAll({
+      where,
+      order: [['createdAt', 'DESC']],
+      limit: parseInt(limit),
+      offset: parseInt(offset)
+    });
+
+    res.json({
+      success: true,
+      media: media.map(m => ({
+        id: m.id,
+        fileName: m.fileName,
+        originalName: m.originalName,
+        mimeType: m.mimeType,
+        fileSize: m.fileSize,
+        fileCategory: m.fileCategory,
+        createdAt: m.createdAt
+      })),
+      count: media.length
+    });
+  })
+);
+
+// Error handling for multer
+router.use(handleMulterError);
 
 module.exports = router;
