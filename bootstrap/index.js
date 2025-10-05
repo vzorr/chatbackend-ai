@@ -18,7 +18,7 @@ const { initializeMetrics } = require('./initializers/metrics');
 const { logEnvironmentInfo } = require('./initializers/environment-info');
 const { initializeModels } = require('./initializers/models');
 const { initializeNotifications } = require('./initializers/notifications');
-const { initializeFileUpload, setupFileRoutes } = require('./initializers/file-upload'); // NEW
+const { initializeFileUpload, setupFileRoutes } = require('./initializers/file-upload');
 
 class Bootstrap {
   constructor() {
@@ -66,7 +66,7 @@ class Bootstrap {
       await this.configureExpressApp();
       console.log('✅ [Step 4/8] Express application configured');
 
-      // Step 5: Initialize file upload system (NEW)
+      // Step 5: Initialize file upload system
       console.log('📋 [Step 5/8] Initializing file upload system...');
       await initializeFileUpload();
       console.log('✅ [Step 5/8] File upload system initialized');
@@ -134,7 +134,7 @@ class Bootstrap {
       await validateConfig(config);
       console.log('✅ Configuration schema validated');
       
-      console.log('🌍 Validating environment variables...');
+      console.log('🌐 Validating environment variables...');
       await validateEnvironment();
       console.log('✅ Environment variables validated');
       
@@ -188,14 +188,15 @@ class Bootstrap {
       await setupMiddleware(this.app);
       console.log('✅ Middleware stack configured');
       
-      console.log('🛣️ Setting up application routes...');
-      await setupRoutes(this.app);
-      console.log('✅ Routes configured');
-      
-      // Setup file upload routes (NEW)
+      // CRITICAL: Setup file upload routes BEFORE main routes
+      // This ensures they're registered before the 404 catch-all handler
       console.log('📁 Setting up file upload routes...');
       await setupFileRoutes(this.app);
       console.log('✅ File upload routes configured');
+      
+      console.log('🛣️ Setting up application routes...');
+      await setupRoutes(this.app);
+      console.log('✅ Routes configured');
       
       console.log('🚨 Setting up error handling...');
       await setupErrorHandling(this.app);
