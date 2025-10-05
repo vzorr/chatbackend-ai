@@ -3,19 +3,29 @@ const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
 
-// Ensure upload directories exist
-const uploadDirs = ['uploads/images', 'uploads/audio', 'uploads/documents'];
+// Ensure upload directories exist (including videos)
+const uploadDirs = [
+  'uploads/images', 
+  'uploads/audio', 
+  'uploads/videos',  // ADDED
+  'uploads/documents',
+  'uploads/files'    // ADDED for generic files
+];
+
 uploadDirs.forEach(dir => {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
+  const fullPath = path.join(process.cwd(), dir);
+  if (!fs.existsSync(fullPath)) {
+    fs.mkdirSync(fullPath, { recursive: true });
+    console.log(`[UPLOAD] Created directory: ${dir}`);
   }
 });
 
 // File type validation
 const fileFilter = (req, file, cb) => {
   const allowedImageTypes = /jpeg|jpg|png|gif|webp/;
-  const allowedAudioTypes = /mp3|wav|ogg|m4a|aac/;
-  const allowedDocTypes = /pdf|doc|docx|txt|zip|rar/;
+  const allowedAudioTypes = /mp3|wav|ogg|m4a|aac|webm/;
+  const allowedVideoTypes = /mp4|mov|avi|webm/;
+  const allowedDocTypes = /pdf|doc|docx|xls|xlsx|txt|zip|rar/;
   
   const ext = path.extname(file.originalname).toLowerCase().slice(1);
   const mimetype = file.mimetype;
@@ -26,6 +36,8 @@ const fileFilter = (req, file, cb) => {
     isValid = true;
   } else if (allowedAudioTypes.test(ext) && mimetype.startsWith('audio/')) {
     isValid = true;
+  } else if (allowedVideoTypes.test(ext) && mimetype.startsWith('video/')) {
+    isValid = true;
   } else if (allowedDocTypes.test(ext)) {
     isValid = true;
   }
@@ -33,7 +45,7 @@ const fileFilter = (req, file, cb) => {
   if (isValid) {
     cb(null, true);
   } else {
-    cb(new Error(`File type not allowed: ${ext}`), false);
+    cb(new Error(`File type not allowed: ${ext} (${mimetype})`), false);
   }
 };
 
@@ -47,9 +59,14 @@ const storage = multer.diskStorage({
       folder = 'uploads/images';
     } else if (mimetype.startsWith('audio/')) {
       folder = 'uploads/audio';
+    } else if (mimetype.startsWith('video/')) {
+      folder = 'uploads/videos';
+    } else {
+      folder = 'uploads/documents';
     }
     
-    cb(null, folder);
+    const fullPath = path.join(process.cwd(), folder);
+    cb(null, fullPath);
   },
   filename: (req, file, cb) => {
     const uniqueName = `${uuidv4()}${path.extname(file.originalname)}`;
@@ -62,7 +79,7 @@ const upload = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB
+    fileSize: 50 * 1024 * 1024 // 50MB (increased from 10MB)
   }
 });
 
