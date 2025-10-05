@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
 const path = require('path');
 const { authenticate } = require('../middleware/authentication');
 const { asyncHandler, createOperationalError } = require('../middleware/exceptionHandler');
@@ -33,6 +34,38 @@ router.post('/image',
         size: req.file.size,
         mimeType: req.file.mimetype,
         type: 'image'
+      }
+    });
+  })
+);
+
+// Single video upload
+router.post('/video',
+  authenticate,
+  upload.single('video'),
+  asyncHandler(async (req, res) => {
+    if (!req.file) {
+      throw createOperationalError('No video file provided', 400, 'NO_FILE');
+    }
+
+    const fileUrl = `/uploads/videos/${req.file.filename}`;
+    
+    logger.info('Video uploaded', {
+      userId: req.user.id,
+      filename: req.file.filename,
+      size: req.file.size,
+      url: fileUrl
+    });
+
+    res.status(201).json({
+      success: true,
+      file: {
+        url: fileUrl,
+        filename: req.file.filename,
+        originalName: req.file.originalname,
+        size: req.file.size,
+        mimeType: req.file.mimetype,
+        type: 'video'
       }
     });
   })
@@ -97,6 +130,38 @@ router.post('/document',
         size: req.file.size,
         mimeType: req.file.mimetype,
         type: 'document'
+      }
+    });
+  })
+);
+
+// Generic file upload (fallback)
+router.post('/file',
+  authenticate,
+  upload.single('file'),
+  asyncHandler(async (req, res) => {
+    if (!req.file) {
+      throw createOperationalError('No file provided', 400, 'NO_FILE');
+    }
+
+    const fileUrl = `/uploads/files/${req.file.filename}`;
+    
+    logger.info('File uploaded', {
+      userId: req.user.id,
+      filename: req.file.filename,
+      size: req.file.size,
+      url: fileUrl
+    });
+
+    res.status(201).json({
+      success: true,
+      file: {
+        url: fileUrl,
+        filename: req.file.filename,
+        originalName: req.file.originalname,
+        size: req.file.size,
+        mimeType: req.file.mimetype,
+        type: 'file'
       }
     });
   })
